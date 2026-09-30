@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "可替换、可评测的 RAG 学习与实验框架"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 dependencies = [
     "numpy>=1.24",
     "pyyaml>=6.0",

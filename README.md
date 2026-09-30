@@ -258,3 +258,9 @@ python scripts/run_ablation.py --suite all --dataset hotpotqa \
 ## 已知问题 / 待办
 
 - CLI 已预留 `--mode agentic`（自主决策 Agent）与 `--mode wiki`（LLM Wiki 知识编译）两种系统形态，`make_agentic_data.py` 已能生成对应演示数据，但这两种模式的实现尚未加入，当前均回退为 `pipeline` 模式。
+
+---
+
+## 许可证
+
+本项目基于 [MIT 协议](LICENSE) 开源。
