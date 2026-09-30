@@ -27,7 +27,7 @@ from learn_rag.core.config import load_config
 def _result(doc_ids: list[str], answer: str = "", contexts: str = "") -> RagResult:
     chunks = [
         ScoredChunk(
-            chunk=__import__("minirag.core.types", fromlist=["Chunk"]).Chunk(
+            chunk=__import__("learn_rag.core.types", fromlist=["Chunk"]).Chunk(
                 chunk_id=f"c{i}", doc_id=d, text=contexts or d
             ),
             score=1.0 - i * 0.1,
@@ -148,6 +148,33 @@ class TestApiReranker(unittest.TestCase):
         self.assertEqual(out[0].text, "RRF常数k取60。")
         self.assertAlmostEqual(out[0].score, 0.95)
         self.assertEqual(out[0].source, "rerank:api")
+
+    def test_dashscope_native_protocol(self):
+        """通义原生接口：路径、请求体和响应结构都与标准协议不同。"""
+        import json as _json
+        import urllib.request
+        from unittest.mock import patch
+
+        from learn_rag.retrieval.rerankers import ApiReranker
+
+        body = {"output": {"results": [{"index": 2, "relevance_score": 0.8}]}}
+        sent = {}
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def read(self): return _json.dumps(body).encode()
+
+        def fake_urlopen(req, timeout):
+            sent["url"], sent["body"] = req.full_url, _json.loads(req.data)
+            return FakeResp()
+
+        reranker = ApiReranker(api_key="fake", base_url="https://dashscope.aliyuncs.com/api/v1")
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = reranker.rerank("BM25", self._cands(), 1)
+        self.assertTrue(sent["url"].endswith("/services/rerank/text-rerank/text-rerank"))
+        self.assertEqual(sent["body"]["input"]["query"], "BM25")
+        self.assertEqual(out[0].chunk.chunk_id, "c2")
 
     def test_falls_back_on_failure(self):
         """精排挂了不能让整条链路挂掉 —— 退回召回顺序，降级但可用。"""

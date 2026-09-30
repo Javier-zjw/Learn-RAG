@@ -30,7 +30,7 @@ except ImportError as _exc:  # pragma: no cover
     from ..core.registry import registry as _registry
 
     _REASON = f"{type(_exc).__name__}: {_exc}"
-    _PKG = __name__.rsplit(".", 1)[0]  # 自动适配包名（minirag / learn_rag 都行）
+    _PKG = __name__.rsplit(".", 1)[0]  # 包名，用于拼接排查提示
 
     @_registry.register("index", "chroma")
     def _chroma_unavailable(**_kwargs):

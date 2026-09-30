@@ -1,5 +1,5 @@
 """
-minirag.cli —— 命令行入口。
+learn_rag.cli —— 命令行入口。
 
 三个子命令对应 RAG 的三件事：
     ask   一次问答（含证据展示）——「跑起来」
@@ -7,10 +7,10 @@ minirag.cli —— 命令行入口。
     ls    查看有哪些可用实现   ——「换得动」
 
 用法示例：
-    python -m minirag.cli ask   --config configs/default.yaml --corpus data/sample_corpus.jsonl -q "什么是RRF?"
-    python -m minirag.cli eval  --config configs/default.yaml --dataset jsonl \
+    python -m learn_rag.cli ask   --config configs/default.yaml --corpus data/sample_corpus.jsonl -q "什么是RRF?"
+    python -m learn_rag.cli eval  --config configs/default.yaml --dataset jsonl \
         --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl --out runs/base.json
-    python -m minirag.cli eval  --config configs/hybrid_rerank.yaml --dataset hotpotqa \
+    python -m learn_rag.cli eval  --dataset hotpotqa \
         --qa data/hotpot_dev_distractor_v1.json --limit 200
 """
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from .core.config import load_config
@@ -166,7 +167,7 @@ def cmd_build(args: argparse.Namespace) -> None:
     icfg = cfg.get("index", {})
     if icfg.get("type") == "chroma":
         print(f"  已持久化到 {icfg.get('path', 'vector_store/chroma')}"
-              f"（collection={icfg.get('collection', 'minirag_default')}）")
+              f"（collection={icfg.get('collection', 'learn_rag_default')}）")
         print(f"  BM25 倒排索引同样已落盘到 {persist}")
     print("  后续评测加 --reuse-index 即可跳过向量化")
 
@@ -179,7 +180,9 @@ def cmd_ls(_: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser("minirag")
+    parser = argparse.ArgumentParser("learn-rag")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="日志级别（默认 INFO）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_ask = sub.add_parser("ask", help="单次问答")
@@ -224,6 +227,11 @@ def main() -> None:
     p_ls.set_defaults(func=cmd_ls)
 
     args = parser.parse_args()
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     args.func(args)
 
 

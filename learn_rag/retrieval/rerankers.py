@@ -12,6 +12,7 @@ retrieval.rerankers —— 精排层。
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import Sequence
@@ -20,6 +21,8 @@ from ..core.interfaces import LLM, Reranker
 from ..core.registry import registry
 from ..core.text import index_tokens
 from ..core.types import ScoredChunk
+
+logger = logging.getLogger(__name__)
 
 
 @registry.register("reranker", "identity")
@@ -116,7 +119,12 @@ class ApiReranker(Reranker):
       SiliconFlow  BAAI/bge-reranker-v2-m3      https://api.siliconflow.cn/v1
       Jina         jina-reranker-v2-base-multilingual   https://api.jina.ai/v1
       Cohere       rerank-multilingual-v3.0     https://api.cohere.com/v1
-      通义(DashScope) gte-rerank                 https://dashscope.aliyuncs.com/compatible-mode/v1
+      通义(DashScope) gte-rerank                 https://dashscope.aliyuncs.com/api/v1
+
+    【接口路径】
+      endpoint 默认是标准的 /rerank；base_url 含 dashscope 时默认改用通义原生路径
+      /services/rerank/text-rerank/text-rerank。其他非标准服务可以在 yaml 里显式指定 endpoint。
+      响应同时兼容 {"results": [...]}、{"data": [...]} 与通义的 {"output": {"results": [...]}}。
     """
 
     def __init__(
@@ -127,9 +135,13 @@ class ApiReranker(Reranker):
             max_chars: int = 1000,
             timeout: int = 60,
             max_retries: int = 2,
+            endpoint: str | None = None,
     ) -> None:
         self.model = model
         self.base_url = (base_url or os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")).rstrip("/")
+        if endpoint is None:
+            endpoint = "/services/rerank/text-rerank/text-rerank" if "dashscope" in self.base_url else "/rerank"
+        self.endpoint = "/" + endpoint.lstrip("/")
         self.api_key = api_key or os.getenv("RERANK_API_KEY", "")
         self.max_chars = max_chars
         self.timeout = timeout
@@ -141,18 +153,21 @@ class ApiReranker(Reranker):
         import time
         import urllib.request
 
-        payload = json.dumps({
-            "model": self.model,
-            "query": query,
-            "documents": [c.text[: self.max_chars] for c in candidates],
-            "top_n": min(top_k, len(candidates))
-        }).encode("utf-8")
+        documents = [c.text[: self.max_chars] for c in candidates]
+        top_n = min(top_k, len(candidates))
+        if self.endpoint.startswith("/services/"):
+            # 通义原生协议：参数分别包在 input / parameters 里
+            body = {"model": self.model, "input": {"query": query, "documents": documents},
+                    "parameters": {"top_n": top_n, "return_documents": False}}
+        else:
+            body = {"model": self.model, "query": query, "documents": documents, "top_n": top_n}
+        payload = json.dumps(body).encode("utf-8")
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 req = urllib.request.Request(
-                    f"{self.base_url}/services/rerank/text-rerank/text-rerank",
+                    f"{self.base_url}{self.endpoint}",
                     data=payload,
                     headers={
                         "Content-Type": "application/json",
@@ -160,9 +175,8 @@ class ApiReranker(Reranker):
                     }
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    body = json.loads(resp.read())
+                    items = _result_items(json.loads(resp.read()))
 
-                items = body.get("output").get("results") or body.get("output").get("data") or []
                 ranked = [
                     ScoredChunk(
                         chunk=candidates[int(item["index"])].chunk,
@@ -175,10 +189,17 @@ class ApiReranker(Reranker):
                 return ranked[: top_k] if ranked else list(candidates)[: top_k]
             except Exception as exc:
                 last_error = exc
-                time.sleep(2 ** attempt)
+                if attempt + 1 < self.max_retries:
+                    time.sleep(2 ** attempt)
 
-        print(f"[warn] rerank API 调用失败，退回召回顺序：{last_error}")
+        logger.warning("rerank API 调用失败，退回召回顺序：%s", last_error)
         return list(candidates)[: top_k]
+
+
+def _result_items(body: dict) -> list[dict]:
+    """从不同服务商的响应里取出结果列表：标准协议在顶层，通义原生协议包在 output 里。"""
+    container = body.get("output") if isinstance(body.get("output"), dict) else body
+    return container.get("results") or container.get("data") or []
 
 
 @registry.register("reranker", "llm")

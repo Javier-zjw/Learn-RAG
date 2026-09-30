@@ -12,10 +12,13 @@ core.config —— 配置加载。
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "chunker": {"type": "recursive", "chunk_size": 400, "chunk_overlap": 80},
@@ -75,7 +78,7 @@ def load_env(path: str | Path | None = None, *, verbose: bool = False) -> str | 
     查找顺序：
       1. 显式传入的 path
       2. 当前工作目录下的 .env
-      3. 项目根目录（minirag 包的上一级）下的 .env
+      3. 项目根目录（learn_rag 包的上一级）下的 .env
     找到第一个就停。
 
     **优先级：已存在的环境变量 > .env 文件**（override=False）。
@@ -92,7 +95,7 @@ def load_env(path: str | Path | None = None, *, verbose: bool = False) -> str | 
         from dotenv import load_dotenv
     except ImportError:
         if verbose:
-            print("[env] 未安装 python-dotenv，跳过 .env 加载（pip install python-dotenv）")
+            logger.info("未安装 python-dotenv，跳过 .env 加载（pip install python-dotenv）")
         _ENV_LOADED = True
         return None
 
@@ -105,11 +108,11 @@ def load_env(path: str | Path | None = None, *, verbose: bool = False) -> str | 
             load_dotenv(candidate, override=False)
             _ENV_LOADED = True
             if verbose:
-                print(f"[env] 已加载 {candidate}")
+                logger.info("已加载 %s", candidate)
             return str(candidate)
     _ENV_LOADED = True
     if verbose:
-        print("[env] 未找到 .env 文件（可选），使用当前环境变量")
+        logger.info("未找到 .env 文件（可选），使用当前环境变量")
     return None
 
 

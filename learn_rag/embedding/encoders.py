@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import threading
@@ -30,6 +31,8 @@ from pathlib import Path
 from ..core.interfaces import TextEncoder
 from ..core.registry import registry
 from ..core.text import char_ngrams, index_tokens
+
+logger = logging.getLogger(__name__)
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -126,8 +129,8 @@ class OpenAICompatEncoder(TextEncoder):
                     raise RuntimeError(f"Embedding 请求失败（单条也被拒绝，不是批量问题）：{exc}") from None
                 old = self.batch_size
                 self.batch_size = max(1, self.batch_size // 2)
-                print(f"[embedding] 服务端拒绝 {old} 条/批，自动降为 {self.batch_size} 条/批重试"
-                      f"（可在 .env 设 EMBEDDING_BATCH_SIZE={self.batch_size} 跳过探测）")
+                logger.warning("服务端拒绝 %d 条/批，自动降为 %d 条/批重试（可在 .env 设 EMBEDDING_BATCH_SIZE=%d 跳过探测）",
+                               old, self.batch_size, self.batch_size)
         if vectors:
             self.dimension = len(vectors[0])
         return vectors

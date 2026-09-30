@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "learn-rag"
+version = "0.1.0"
+description = "可替换、可评测的 RAG 学习与实验框架"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# .env 自动加载
+dotenv = ["python-dotenv>=1.0"]
+# Chroma 持久化向量库
+chroma = ["chromadb>=0.5"]
+# 本地 embedding / CrossEncoder 精排
+local = ["sentence-transformers>=2.7"]
+all = [
+    "python-dotenv>=1.0",
+    "chromadb>=0.5",
+    "sentence-transformers>=2.7",
+]
+dev = [
+    "pytest>=8.0",
+    "python-dotenv>=1.0",
+    "chromadb>=0.5",
+]
+
+[project.scripts]
+learn-rag = "learn_rag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["learn_rag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

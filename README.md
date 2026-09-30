@@ -54,7 +54,7 @@
 | --- | --- | --- |
 | 召回 `retriever` | `vector`、`bm25`、`hybrid`、`transformed` | 混合检索使用带权重的 **RRF** 融合；检索器可任意嵌套组合 |
 | 查询改写 `query_transformer` | `identity`、`multi_query`、`hyde` | 多路改写 / HyDE 假设答案检索（需 LLM） |
-| 精排 `reranker` | `identity`、`lexical`、`cross_encoder`、`api`、`llm` | 不精排 / 词法重叠 / 本地 CrossEncoder / 远程 Rerank API（如 SiliconFlow bge-reranker）/ LLM 打分 |
+| 精排 `reranker` | `identity`、`lexical`、`cross_encoder`、`api`、`llm` | 不精排 / 词法重叠 / 本地 CrossEncoder / 远程 Rerank API（兼容标准 `/rerank` 协议与通义 DashScope 原生协议，失败时退回召回顺序）/ LLM 打分 |
 | 大模型 `llm` | `echo`、`openai_compat` | 占位 / 任意 OpenAI 兼容 Chat 接口（DeepSeek、OpenAI 等） |
 | 生成 `generator` | `extractive`、`stuff` | 抽取式（无需 LLM 即可端到端评测）/ 按字符预算装配上下文、要求引用并允许拒答 |
 
@@ -142,6 +142,7 @@ Learn-RAG/
 ├── configs/           # YAML 实验配置
 ├── scripts/           # 数据准备、数据检查、消融实验脚本
 ├── tests/             # 单元测试
+├── pyproject.toml     # 打包与依赖声明
 └── env.example.txt    # 模型/密钥配置模板
 ```
 
@@ -152,12 +153,19 @@ Learn-RAG/
 ### 1. 安装依赖
 
 ```bash
-pip install pyyaml numpy
-# 可选
-pip install python-dotenv           # 自动加载 .env
-pip install chromadb                # Chroma 持久化向量库
-pip install sentence-transformers   # 本地 embedding / CrossEncoder 精排
+pip install -e .              # 核心依赖：numpy、pyyaml，并注册 learn-rag 命令
+# 可选扩展
+pip install -e ".[dotenv]"    # 自动加载 .env
+pip install -e ".[chroma]"    # Chroma 持久化向量库
+pip install -e ".[local]"     # 本地 embedding / CrossEncoder 精排
+pip install -e ".[all]"       # 以上全部
+pip install -e ".[dev]"       # 跑测试所需依赖
 ```
+
+运行测试：`python -m unittest discover tests`（或 `pytest`）。
+
+安装后 `learn-rag <子命令>` 与 `python -m learn_rag.cli <子命令>` 等价。
+全局参数 `--log-level DEBUG|INFO|WARNING|ERROR` 控制日志输出（放在子命令之前）。
 
 ### 2. 离线跑通（无需任何 API Key）
 
@@ -249,8 +257,4 @@ python scripts/run_ablation.py --suite all --dataset hotpotqa \
 
 ## 已知问题 / 待办
 
-- 项目由 `minirag` 重命名为 `learn_rag`，部分位置仍残留旧包名：
-  `scripts/run_ablation.py`、`scripts/prepare_dataset.py` 中的 `from minirag...` 导入，`tests/test_core.py` 中的 `__import__("minirag.core.types")`，以及 CLI 文档字符串中的示例命令，需要统一改为 `learn_rag`。
-- `learn_rag/eval/runner.py` 中存在未使用的 `from streamlit import progress`，会导致未安装 streamlit 时评测模块无法导入，应当删除。
-- 尚未提供 `requirements.txt` / `pyproject.toml`。
 - CLI 已预留 `--mode agentic`（自主决策 Agent）与 `--mode wiki`（LLM Wiki 知识编译）两种系统形态，`make_agentic_data.py` 已能生成对应演示数据，但这两种模式的实现尚未加入，当前均回退为 `pipeline` 模式。

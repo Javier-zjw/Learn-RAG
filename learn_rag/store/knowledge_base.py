@@ -12,12 +12,15 @@ store.knowledge_base —— 知识库（离线链路的门面 / Facade）。
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 
 from ..core.interfaces import Chunker, TextEncoder
 from ..core.types import Chunk, Document
 from .indexes import BM25Index, FlatVectorIndex
+
+logger = logging.getLogger(__name__)
 
 class KnowledgeBase:
     def __init__(
@@ -52,7 +55,7 @@ class KnowledgeBase:
                 self._flush(buffer)
                 buffer = []
             if progress and added["documents"] % 200 == 0:
-                print(f"  已处理 {added['documents']} 篇文档 / {added['chunks']} 个片段")
+                logger.info("已处理 %d 篇文档 / %d 个片段", added["documents"], added["chunks"])
 
         if buffer:
             self._flush(buffer)

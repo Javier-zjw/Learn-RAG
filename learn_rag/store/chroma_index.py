@@ -54,7 +54,7 @@ class ChromaVectorIndex(VectorIndex):
     def __init__(
         self,
         path: str = "vector_store/chroma",
-        collection: str = "minirag_default",
+        collection: str = "learn_rag_default",
         space: str = "cosine",
         ef_construction: int = 200,
         max_neighbors: int = 32,

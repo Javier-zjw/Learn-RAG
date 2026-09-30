@@ -16,6 +16,7 @@ eval.runner —— 评测执行器（评测链路的门面）。
 from __future__ import annotations
 
 import json
+import logging
 import statistics
 import traceback
 from collections.abc import Iterable, Sequence
@@ -24,11 +25,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from streamlit import progress
 
 from ..core.interfaces import EvalDataset, Metric
 from ..core.types import Answer, EvalSample, EvalCase, RagResult
 from ..pipeline.rag import RagPipeline
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class EvalReport:
@@ -107,12 +109,12 @@ class Evaluator:
                 # 通用渲染：不同系统形态返回的统计字段不同
                 # （固定管线给 chunks，wiki 给 pages/links/conflicts）。
                 # 评测器不该假设任何具体键名 —— 那是对 Solver 接口的越权假设。
-                print("[索引] " + "　".join(f"{k}={v}" for k, v in stats.items()))
+                logger.info("[索引] %s", "　".join(f"{k}={v}" for k, v in stats.items()))
 
         samples = list(dataset.samples())
         if limit:
             samples = samples[:limit]
-        print(f"[评测] 数据集={dataset.name} 样本={len(samples)} 指标={len(self.metrics)}")
+        logger.info("[评测] 数据集=%s 样本=%d 指标=%d", dataset.name, len(samples), len(self.metrics))
 
         report = EvalReport(dataset=dataset.name)
         if self.workers == 1:

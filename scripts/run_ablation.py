@@ -21,18 +21,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from minirag.core.config import load_config
-from minirag.eval.datasets import BeirStyleDataset, HotpotQADataset, JsonlQADataset, SquadStyleDataset
-from minirag.eval.metrics import default_metrics
-from minirag.eval.runner import Evaluator
-from minirag.embedding.encoders import CachingEncoder
-from minirag.pipeline.rag import RagPipeline
+from learn_rag.core.config import load_config
+from learn_rag.eval.datasets import BeirStyleDataset, HotpotQADataset, JsonlQADataset, SquadStyleDataset
+from learn_rag.eval.metrics import default_metrics
+from learn_rag.eval.runner import Evaluator
+from learn_rag.embedding.encoders import CachingEncoder
+from learn_rag.pipeline.rag import RagPipeline
 
 _ENCODER_CACHE: dict[str, CachingEncoder] = {}
 
@@ -218,6 +219,7 @@ def main() -> None:
     ap.add_argument("--retrieval-only", action="store_true", help="只评检索，省时省钱（调检索时强烈建议开）")
     ap.add_argument("--out", default="runs/ablation")
     args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
     args.config = ["configs/default.yaml", *(args.config or [])]
 
     suites = list(SUITES) if args.suite == "all" else [args.suite]

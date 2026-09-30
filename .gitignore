@@ -12,3 +12,11 @@ debug/
 
 # 本地密钥，绝不提交
 .env
+# macOS
+.DS_Store
+
+# 构建产物
+*.egg-info/
+build/
+dist/
+vector_store/

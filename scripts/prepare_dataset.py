@@ -33,7 +33,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from minirag.eval.datasets import BeirStyleDataset, HotpotQADataset, SquadStyleDataset
+from learn_rag.eval.datasets import BeirStyleDataset, HotpotQADataset, SquadStyleDataset
 
 BUILDERS = {
     "hotpotqa": HotpotQADataset,
