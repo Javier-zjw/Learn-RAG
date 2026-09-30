@@ -17,12 +17,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 from .types import (
     Answer,
     Chunk,
     Document,
+    Element,
     EvalSample,
     RagResult,
     ScoredChunk,
@@ -40,6 +42,17 @@ class DocumentSource(ABC):
 
     @abstractmethod
     def load(self) -> Iterable[Document]: ...
+
+class DocumentParser(ABC):
+    """
+    文档解析器：一个文件 -> 有序的结构元素列表
+
+    只做"读懂文件"这一件事。doc_id、元数据、缓存、失败降级都由调用方（FileSource）统一处理，
+    因此接入一个新工具只需要把它的输出翻译成 Element。
+    """
+
+    @abstractmethod
+    def parse(self, path: Path) -> list[Element]: ...
 
 class Chunker(ABC):
     """

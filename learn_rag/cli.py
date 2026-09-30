@@ -26,6 +26,7 @@ from .core.registry import registry
 from .eval.datasets import BeirStyleDataset, HotpotQADataset, JsonlQADataset, SquadStyleDataset
 from .eval.metrics import LLMJudge, default_metrics
 from .ingest.loaders import JsonlSource
+from .parsing.source import FileSource
 from .pipeline.rag import RagPipeline
 
 
@@ -77,11 +78,18 @@ def _build_dataset(args: argparse.Namespace):
     raise SystemExit(f"未知数据集类型：{kind}")
 
 
+def _load_documents(args: argparse.Namespace, cfg: dict):
+    """--docs 走文档解析（PDF / Office / 网页 / 图片），--corpus 读 jsonl 语料。"""
+    if getattr(args, "docs", None):
+        return FileSource(args.docs, **(cfg.get("parsing") or {})).load()
+    return JsonlSource(args.corpus).load()
+
+
 def cmd_ask(args: argparse.Namespace) -> None:
     cfg = load_config(*_config_paths(args))
     pipe = _build_system(args, cfg)
-    if args.corpus:
-        stats = pipe.index(JsonlSource(args.corpus).load())
+    if args.corpus or args.docs:
+        stats = pipe.index(_load_documents(args, cfg))
         print(f"[索引] {stats}")
     result = pipe.answer(args.question)
     if result.extras.get("mode") == "wiki":
@@ -149,7 +157,7 @@ def cmd_build(args: argparse.Namespace) -> None:
     pipe = _build_system(args, cfg)
 
     docs = list(_build_dataset(args).corpus()) if (args.dataset and args.qa) \
-        else list(JsonlSource(args.corpus).load())
+        else list(_load_documents(args, cfg))
 
     t0 = time.perf_counter()
     stats = pipe.index(docs, progress=True)
@@ -175,7 +183,7 @@ def cmd_build(args: argparse.Namespace) -> None:
 def cmd_ls(_: argparse.Namespace) -> None:
     from . import eval as _eval  # noqa: F401  触发指标/数据集注册
 
-    for ns in ["source", "chunker", "encoder", "index", "retriever", "query_transformer", "reranker", "generator", "llm", "dataset", "metric"]:
+    for ns in ["source", "parser", "chunker", "encoder", "index", "retriever", "query_transformer", "reranker", "generator", "llm", "dataset", "metric"]:
         print(f"{ns:20s} {registry.options(ns)}")
 
 
@@ -188,6 +196,7 @@ def main() -> None:
     p_ask = sub.add_parser("ask", help="单次问答")
     p_ask.add_argument("--config", action="append", default=None, help="可多次指定，后者覆盖前者")
     p_ask.add_argument("--corpus", help="jsonl 语料，用于现场建索引（已 build 过则不用传）")
+    p_ask.add_argument("--docs", help="文档目录或文件（PDF/Word/PPT/Excel/网页/图片），解析后现场建索引")
     p_ask.add_argument("-q", "--question", required=True)
     p_ask.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"],
                        help="pipeline=传统固定管线，agentic=自主决策 agent，wiki=知识编译（LLM Wiki）")
@@ -215,6 +224,7 @@ def main() -> None:
     p_build = sub.add_parser("build", help="离线建库并持久化（只需跑一次）")
     p_build.add_argument("--config", action="append", default=None)
     p_build.add_argument("--corpus", help="jsonl 语料")
+    p_build.add_argument("--docs", help="文档目录或文件（PDF/Word/PPT/Excel/网页/图片）")
     p_build.add_argument("--dataset", choices=["jsonl", "hotpotqa", "squad_style", "beir_style"],
                          help="也可以直接用数据集自带的语料")
     p_build.add_argument("--qa", help="数据集问答文件（配合 --dataset）")

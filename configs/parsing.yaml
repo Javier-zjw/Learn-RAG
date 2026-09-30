@@ -1,0 +1,29 @@
+# 文档解析配置：PDF / Word / PPT / Excel / 网页 / 图片 -> 结构化 Document -> 结构感知切分
+#
+# 用法（依赖：pip install -e ".[parsing]"）：
+#   python -m learn_rag.cli ask   --config configs/parsing.yaml --docs path/to/docs -q "问题"
+#   python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chroma.yaml --docs path/to/docs
+#
+# 解析结果按文件内容缓存在 cache_dir，调整切分参数后重建索引不会重新解析。
+
+chunker:
+  type: structure
+  chunk_size: 800        # 以标题为边界装箱；表格单独成块，超长表格按行切分并重复表头
+  chunk_overlap: 100     # 仅用于切开超长段落
+
+parsing:
+  cache_dir: .cache/parsed
+  # 按后缀覆盖默认解析器，列表表示依次尝试（首选失败自动降级）。默认：
+  #   .md/.txt -> markdown   .html -> html   .docx -> docx   .pptx -> pptx   .xlsx -> xlsx
+  #   .pdf -> pdf（PyMuPDF）  .png/.jpg -> vlm_ocr
+  # 版面复杂的 PDF 可改用 MinerU（pip install -U "mineru[core]"），失败时退回 PyMuPDF：
+  # parsers:
+  #   .pdf: [mineru, pdf]
+  # options:
+  #   mineru: {backend: pipeline, lang: ch}
+  #
+  # 扫描页与图片的 OCR：任意 OpenAI 兼容的视觉模型服务（PaddleOCR-VL、MinerU2.5、Qwen-VL 等）。
+  # 读取 OCR_BASE_URL / OCR_API_KEY / OCR_MODEL；不配置则扫描页和图片会被跳过并告警。
+  # ocr:
+  #   type: vlm_ocr
+  #   model: ${OCR_MODEL}

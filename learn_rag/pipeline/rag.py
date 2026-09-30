@@ -27,7 +27,7 @@ from ..core.types import Document, RagResult, ScoredChunk, Timer
 from ..store.knowledge_base import KnowledgeBase
 
 # 触发各实现模块的注册（import 副作用）。集中在这里，使用者只 import 本模块即可。
-from .. import embedding, generation, ingest, retrieval, store
+from .. import embedding, generation, ingest, parsing, retrieval, store
 
 class RagPipeline:
 

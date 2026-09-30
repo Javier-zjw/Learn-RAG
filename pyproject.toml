@@ -21,15 +21,33 @@ dotenv = ["python-dotenv>=1.0"]
 chroma = ["chromadb>=0.5"]
 # 本地 embedding / CrossEncoder 精排
 local = ["sentence-transformers>=2.7"]
+# 文档解析：PDF / Word / PPT / Excel
+parsing = [
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1",
+]
+# 高精度解析工具（体积大，按需安装）
+mineru = ["mineru[core]>=2.5"]
+docling = ["docling>=2.0"]
 all = [
     "python-dotenv>=1.0",
     "chromadb>=0.5",
     "sentence-transformers>=2.7",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1",
 ]
 dev = [
     "pytest>=8.0",
     "python-dotenv>=1.0",
     "chromadb>=0.5",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]

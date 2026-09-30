@@ -5,6 +5,7 @@ core 层：数据契约 + 抽象接口 + 注册表 + 配置。不依赖任何上
 from .config import load_config, load_env
 from .interfaces import (
     Chunker,
+    DocumentParser,
     DocumentSource,
     EvalDataset,
     Generator,
@@ -21,6 +22,7 @@ from .types import (
     Answer,
     Chunk,
     Document,
+    Element,
     EvalCase,
     EvalSample,
     RagResult,
@@ -33,6 +35,7 @@ __all__ = [
     "load_env",
     "registry",
     "Chunker",
+    "DocumentParser",
     "DocumentSource",
     "EvalDataset",
     "Generator",
@@ -46,6 +49,7 @@ __all__ = [
     "Answer",
     "Chunk",
     "Document",
+    "Element",
     "EvalCase",
     "EvalSample",
     "RagResult",

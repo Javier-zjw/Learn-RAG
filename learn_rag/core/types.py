@@ -19,12 +19,55 @@ from typing import Any
 
 # 1. 索引侧（离线）数据结构
 @dataclass
+class Element:
+    """
+    文档解析出的最小结构单元 —— 所有解析器（原生库 / MinerU / Docling / OCR）的统一输出。
+
+    kind 只有少数几种取值，上层按 kind 决定怎么切分，不关心它来自哪个解析器：
+        heading  标题（level 表示层级 1~6）
+        text     段落、列表项
+        table    表格（text 为 Markdown 表格）
+        image    图片（text 为图注或模型生成的描述）
+        formula  公式（text 为 LaTeX）
+        code     代码块
+    页眉、页脚、页码等噪声由解析器直接丢弃，不进入这里。
+    """
+
+    kind: str
+    text: str
+    level: int = 0
+    page: int | None = None
+    bbox: list[float] | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_markdown(self) -> str:
+        if self.kind == "heading":
+            return "#" * max(1, min(self.level, 6)) + " " + self.text
+        if self.kind == "formula":
+            return f"$$\n{self.text}\n$$"
+        if self.kind == "code":
+            return f"```\n{self.text}\n```"
+        return self.text
+
+
+@dataclass
 class Document:
-    """一篇原始文档（未切分）,doc_id 必须在语料库内唯一"""
+    """
+    一篇原始文档（未切分）,doc_id 必须在语料库内唯一
+
+    elements 是解析得到的结构（可为空，如 jsonl 语料）；有结构时 text 由它渲染而来，
+    因此只认 text 的旧组件（递归切分、BM25）照常工作，认结构的组件（结构切分）能拿到更多信息。
+    """
 
     doc_id: str
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    elements: list[Element] = field(default_factory=list)
+
+    @classmethod
+    def from_elements(cls, doc_id: str, elements: list[Element], metadata: dict[str, Any] | None = None) -> "Document":
+        text = "\n\n".join(e.to_markdown() for e in elements if e.text.strip())
+        return cls(doc_id=doc_id, text=text, metadata=dict(metadata or {}), elements=list(elements))
 
     @property
     def title(self) -> str:
