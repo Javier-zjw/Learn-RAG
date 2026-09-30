@@ -39,14 +39,33 @@
 
 | 环节 | 已实现组件 | 说明 |
 | --- | --- | --- |
-| 数据源 `source` | `memory`、`jsonl`、`directory` | 统一为 `Document` 流 |
-| 切分 `chunker` | `fixed`、`recursive`、`markdown` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 |
+| 数据源 `source` | `memory`、`jsonl`、`directory`、`files` | 统一为 `Document` 流；`files` 解析 PDF / Office / 网页 / 图片（见下文“文档解析”） |
+| 文档解析 `parser` | `markdown`、`html`、`docx`、`pptx`、`xlsx`、`pdf`、`vlm_ocr`、`mineru`、`docling` | 各种文件统一解析为结构元素 `Element` |
+| 切分 `chunker` | `fixed`、`recursive`、`markdown`、`structure` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 / 基于解析结构切分 |
 | 向量化 `encoder` | `hashing`、`openai_compat`、`sentence_transformers`、`cached` | 特征哈希（零依赖离线可跑）/ 任意 OpenAI 兼容 embedding 服务（超批量上限时自动减半重试）/ 本地模型 / 带缓存的装饰器 |
 | 向量索引 `index` | `flat`、`chroma` | 暴力内积精确检索 / Chroma 持久化 HNSW（可调 `space`、`ef_construction`、`max_neighbors`、`ef_search`） |
 | 倒排索引 | `BM25Index` | 与向量索引同步写入、同步落盘 |
 
 `KnowledgeBase`（`store/knowledge_base.py`）作为离线门面，对外只暴露 `add / save / load / stats`，内部完成“切分 → 攒批向量化 → 写向量索引 → 写 BM25 索引”。
 持久化目录按 collection 隔离，避免不同数据集的 BM25 索引互相覆盖；Chroma 未安装时会给出带排查建议的明确报错，而不是含糊的“未注册”。
+
+#### 文档解析（`learn_rag/parsing`）
+
+企业文档先解析为统一的结构元素 `Element`（标题 / 段落 / 表格 / 图片 / 公式 / 代码，附带层级、页码、坐标），再由 `Document.from_elements` 渲染成 Markdown 文本，旧的切分器与检索无需改动。
+
+| 格式 | 默认解析器 | 处理方式 |
+| --- | --- | --- |
+| `.md` / `.txt` | `markdown` | 识别标题、表格、代码块、公式、图片 |
+| `.html` | `html` | 读取标签结构，跳过导航、页眉页脚、脚本 |
+| `.docx` | `docx` | 按正文顺序读取段落与表格，标题层级取自样式 |
+| `.pptx` | `pptx` | 每页一个标题，按阅读顺序读取文本框和表格，收录演讲者备注 |
+| `.xlsx` | `xlsx` | 每个工作表一张表格，去掉空行空列，读取公式计算结果 |
+| `.pdf` | `pdf` | 按字号识别标题层级、检测表格、去除重复页眉页脚和页码、合并跨页段落；文字层缺失的扫描页交给 OCR |
+| 图片 | `vlm_ocr` | 调用任意 OpenAI 兼容的视觉模型（PaddleOCR-VL、MinerU2.5、Qwen-VL 等）转写为 Markdown |
+
+- 版面复杂的 PDF 可在配置里改用 `mineru` 或 `docling` 适配器，并配置备选解析器，首选失败时自动降级。
+- `FileSource` 按“文件内容哈希 + 解析器 + 参数”缓存解析结果，调整切分策略、重建索引时不会重复解析；单个文件失败只记日志并跳过。
+- `structure` 切分器以标题为边界切分，块首拼接“文档标题 > 章节路径”；表格单独成块，超长表格按行切分并在每块重复表头；每个块记录章节路径和页码范围，便于溯源。
 
 ### 3. 在线检索与生成链路
 
@@ -75,7 +94,7 @@
 
 | 子命令 | 作用 |
 | --- | --- |
-| `ask` | 单次问答，展示答案、证据片段（分数/来源/标题）与各阶段耗时 |
+| `ask` | 单次问答，展示答案、证据片段（分数/来源/标题）与各阶段耗时；`--docs` 可直接解析文档目录 |
 | `build` | 离线建库并持久化向量索引与 BM25 索引（只需跑一次） |
 | `eval` | 在数据集上评测，支持 `--retrieval-only`、`--judge`、`--reuse-index`、`--workers`、`--out` |
 | `ls` | 列出每一层所有已注册的可用实现 |
@@ -98,10 +117,11 @@
 | `chroma.yaml` | Chroma 持久化向量库 |
 | `ds_scifact.yaml` / `ds_fiqa.yaml` | BEIR 基准，对齐 nDCG@10 口径 |
 | `ds_cmrc.yaml` | 中文 CMRC2018，可同时评检索与生成 |
+| `parsing.yaml` | 文档解析 + 结构感知切分 |
 
-### 8. 测试（`tests/test_core.py`）
+### 8. 测试（`tests/`）
 
-基于 `unittest`，覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”。
+基于 `unittest`：`test_core.py` 覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”；`test_parsing.py` 覆盖各格式解析、MinerU / Docling / OCR 适配器（mock）、解析缓存与降级、结构切分和端到端问答。样例文件在测试中现场生成。
 
 ---
 
@@ -131,7 +151,8 @@ EvalDataset ──▶ Evaluator(RagPipeline, Metrics) ──▶ EvalReport（Mar
 Learn-RAG/
 ├── learn_rag/
 │   ├── core/          # 数据契约、抽象接口、注册表、配置加载、文本处理
-│   ├── ingest/        # 数据源 + 切分器
+│   ├── ingest/        # 数据源 + 切分器（含结构感知切分）
+│   ├── parsing/       # 文档解析：PDF / Office / 网页 / OCR / MinerU / Docling
 │   ├── embedding/     # 文本向量化
 │   ├── store/         # 向量索引（flat / chroma）、BM25、KnowledgeBase
 │   ├── retrieval/     # 召回、查询改写、精排
@@ -158,6 +179,7 @@ pip install -e .              # 核心依赖：numpy、pyyaml，并注册 learn-
 pip install -e ".[dotenv]"    # 自动加载 .env
 pip install -e ".[chroma]"    # Chroma 持久化向量库
 pip install -e ".[local]"     # 本地 embedding / CrossEncoder 精排
+pip install -e ".[parsing]"   # 文档解析：PDF / Word / PPT / Excel
 pip install -e ".[all]"       # 以上全部
 pip install -e ".[dev]"       # 跑测试所需依赖
 ```
@@ -204,6 +226,18 @@ python -m learn_rag.cli build --config configs/models_env.yaml --config configs/
 python -m learn_rag.cli eval --config configs/models_env.yaml --config configs/ds_scifact.yaml \
     --dataset beir_style --qa data/scifact --reuse-index --retrieval-only
 ```
+
+### 5. 解析企业文档（PDF / Word / PPT / Excel / 网页 / 图片）
+
+```bash
+pip install -e ".[parsing]"
+python -m learn_rag.cli ask --config configs/parsing.yaml --docs path/to/docs -q "差旅住宿标准是多少？"
+
+# 离线建库并持久化
+python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chroma.yaml --docs path/to/docs
+```
+
+扫描件和图片需要配置 OCR 模型（`.env` 中的 `OCR_BASE_URL` / `OCR_API_KEY` / `OCR_MODEL`，并在 `configs/parsing.yaml` 中打开 `ocr`）。
 
 ---
 
@@ -258,6 +292,11 @@ python scripts/run_ablation.py --suite all --dataset hotpotqa \
 ## 已知问题 / 待办
 
 - CLI 已预留 `--mode agentic`（自主决策 Agent）与 `--mode wiki`（LLM Wiki 知识编译）两种系统形态，`make_agentic_data.py` 已能生成对应演示数据，但这两种模式的实现尚未加入，当前均回退为 `pipeline` 模式。
+- 文档解析的已知局限：
+  - 原生 PDF / Word / PPT 解析器暂不处理内嵌图片（图表不会生成文字描述）；需要时改用 `mineru` 或 `docling`。
+  - 原生 PDF 解析按文字块顺序读取，多栏排版可能出现阅读顺序错乱，复杂版面建议使用 `mineru`。
+  - `mineru` / `docling` 适配器目前只用模拟输出做过测试，接入真实环境后需要用自己的文档验证一次。
+  - 结构切分已记录章节路径，但“小块检索、返回整节上下文”的父子块检索尚未实现。
 
 ---
 
