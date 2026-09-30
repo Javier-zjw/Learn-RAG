@@ -1,0 +1,43 @@
+# 默认配置：完全离线可跑（不需要任何 API Key / 不需要下载模型）
+# 目的：先把"链路 + 评测"跑通，再逐步替换成真模型看指标变化。
+
+# 递归切分：优先按语义边界切
+chunker:
+  type: recursive
+  chunk_size: 300
+  chunk_overlap: 60
+
+# 特征哈希向量：零依赖、确定性
+encoder:
+  type: hashing
+  dimension: 512
+
+# 暴力内积检索
+index:
+  type: flat
+
+# 多路召回 + RRF 融合
+retriever:
+  type: hybrid
+  rrf_k: 60
+  weights: [1.0, 1.0]
+  channels:
+    - type: vector
+    - type: bm25
+
+# 离线精排（真实项目换成 cross_encoder）
+reranker:
+  type: lexical
+
+# 占位；extractive 生成器不会用到它
+llm:
+  type: echo
+
+# 抽取式生成：无需 LLM 也能端到端评测
+generator:
+  type: extractive
+
+
+pipeline:
+  top_k: 5 # 最终进 prompt 的片段数
+  candidate_k: 20 # 召回候选数（给精排留排序空间）

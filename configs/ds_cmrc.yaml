@@ -1,0 +1,30 @@
+# CMRC2018 dev：848 个中文段落，3,219 条问题，**有标准答案**。
+# 和 BEIR 不同，这个能同时评检索和生成。
+
+chunker:
+  type: recursive
+  # 中文一个字≈一个 token，别照搬英文经验。CMRC 段落多在 500~1000 字，
+  # 300 字会把一段切成 2~3 片，答案被切开的概率不小 —— 值得做一次消融。
+  chunk_size: 400
+  chunk_overlap: 80
+
+retriever:
+  type: hybrid
+  # 中文短查询上 BM25 通常比向量强，这里给它略高的权重作为起点
+  weights: [1.0, 1.2]
+  channels:
+    - type: vector
+    - type: bm25
+
+reranker:
+  type: identity
+
+pipeline:
+  top_k: 5
+  candidate_k: 30
+
+index:
+  type: chroma
+  path: vector_store
+  collection: cmrc_dev
+  space: cosine

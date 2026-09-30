@@ -1,0 +1,41 @@
+# 模型配置：直接读环境变量，与 debug/*.py 里的 CONFIG 用的是**同一组变量**。
+#
+# 最省事的做法：项目根目录放 .env 文件（cp .env.example .env 后填值），
+# load_config 会自动加载它（需要 pip install python-dotenv）。
+# shell / PyCharm 里设的同名变量优先级更高，可以临时覆盖 .env。
+#
+#   export LLM_BASE_URL=...        export EMBEDDING_BASE_URL=...   export RERANK_BASE_URL=...
+#   export LLM_API_KEY=...         export EMBEDDING_API_KEY=...    export RERANK_API_KEY=...
+#   export LLM_MODEL=...           export EMBEDDING_MODEL=...      export RERANK_MODEL=...
+#                                  export EMBEDDING_DIM=...
+#
+# 语法：${变量名} 或 ${变量名:-默认值}
+# 用法：放在 --config 列表里，数据集配置之前：
+#   --config configs/models_env.yaml --config configs/ds_scifact.yaml
+
+encoder:
+  type: openai_compat
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  base_url: ${EMBEDDING_BASE_URL}
+  api_key: ${EMBEDDING_API_KEY}
+  dimension: ${EMBEDDING_DIM:-1536}
+  # 单次请求的文本条数。超过服务商上限会自动减半重试，但会打印提示；
+  # 探测到合适的值后写进 .env 的 EMBEDDING_BATCH_SIZE，就不用每次重新探测了
+  batch_size: ${EMBEDDING_BATCH_SIZE:-32}
+
+llm:
+  type: openai_compat
+  model: ${LLM_MODEL:-deepseek-chat}
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  temperature: 0.0
+
+reranker:
+  type: api
+  model: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+  base_url: ${RERANK_BASE_URL}
+  api_key: ${RERANK_API_KEY}
+
+generator:
+  type: stuff
+  max_context_chars: 4000

@@ -1,0 +1,19 @@
+# Chroma 持久化向量库配置。
+#
+# 典型流程（离线建库一次，之后反复评测都复用）：
+#   python -m learn_rag.cli build --config configs/chroma.yaml --corpus data/sample_corpus.jsonl
+#   python -m learn_rag.cli eval  --config configs/chroma.yaml --reuse-index \
+#       --dataset jsonl --qa data/sample_qa.jsonl
+#
+# 换了 embedding 模型或维度后，务必把 reset 临时改成 true 重建一次，
+# 否则新旧向量混在一起，结果会莫名其妙地差，而且**不报错**。
+
+index:
+  type: chroma
+  path: vector_store/chroma      # 落盘位置
+  collection: learn_rag_default    # 换语料/换模型时换个名字，互不干扰
+  space: cosine                  # cosine | l2 | ip
+  ef_construction: 200           # 建图质量：越大图越好、建库越慢
+  max_neighbors: 32              # HNSW 的 M：每个节点的连接数
+  ef_search: 100                 # 查询宽度：唯一能在线调的参数，调大→召回升、延迟升
+  reset: false                   # true = 建库前清空该 collection

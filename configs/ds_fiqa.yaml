@@ -1,0 +1,29 @@
+# FiQA-2018（BEIR）：57,638 篇金融问答帖，测试集 648 条问题。
+# **能看到 HNSW 真实取舍的量级**。建库一次，后面全部 --reuse-index。
+
+chunker:
+  type: recursive
+  chunk_size: 2000          # 同 SciFact：BEIR 按文档标注，别切碎
+  chunk_overlap: 200
+
+retriever:
+  type: hybrid
+  channels:
+    - type: vector
+    - type: bm25
+
+reranker:
+  type: identity
+
+pipeline:
+  top_k: 10                 # nDCG@10
+  candidate_k: 50
+
+index:
+  type: chroma
+  path: vector_store
+  collection: fiqa
+  space: cosine
+  ef_construction: 200
+  max_neighbors: 32
+  ef_search: 100

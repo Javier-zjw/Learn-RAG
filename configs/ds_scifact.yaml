@@ -1,0 +1,29 @@
+# SciFact（BEIR）：5,183 篇科学论文摘要，测试集约 300 条问题。
+# 放在 --config 列表的**最后**，保证这里的检索口径覆盖其他配置。
+
+chunker:
+  type: recursive
+  # BEIR 的相关性是按"文档"标注的。切得太碎的话，top-10 个片段可能只对应
+  # 三四篇文档，nDCG@10 会被系统性压低，和论文数字没法比。
+  # SciFact 摘要平均 ~1500 字符，2000 基本等于不切。
+  chunk_size: 2000
+  chunk_overlap: 200
+
+retriever:
+  type: hybrid
+  channels:
+    - type: vector
+    - type: bm25
+
+reranker:
+  type: identity            # 基线先不精排，精排作为单独的消融变量
+
+pipeline:
+  top_k: 10                 # BEIR 标准口径是 nDCG@10 —— 必须对齐才能和论文比
+  candidate_k: 50
+
+index:
+  type: chroma
+  path: vector_store
+  collection: scifact       # 每个数据集一个 collection，互不干扰
+  space: cosine
