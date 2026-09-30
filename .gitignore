@@ -8,6 +8,7 @@ data/*.json
 .venv/
 debug/
 /data
+.idea
 
 # 本地密钥，绝不提交
 .env
