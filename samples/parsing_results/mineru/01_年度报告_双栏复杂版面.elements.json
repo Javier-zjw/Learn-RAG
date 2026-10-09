@@ -314,6 +314,22 @@
     }
   },
   {
+    "kind": "text",
+    "text": "¹ 客户留存率 = 年末仍在合作的客户数 / 年初客户数，数据来源:内部 CRM 系统。",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.079,
+      0.905,
+      0.572,
+      0.919
+    ],
+    "extra": {
+      "mineru_type": "page_footnote",
+      "footnote": true
+    }
+  },
+  {
     "kind": "heading",
     "text": "2 区域经营数据",
     "level": 2,
@@ -343,7 +359,7 @@
   },
   {
     "kind": "table",
-    "text": "表 1 2025 年各区域季度营收\n<table><tbody><tr><td rowspan=\"2\">区域</td><td colspan=\"2\">上半年</td><td colspan=\"2\">下半年</td><td rowspan=\"2\">全年合计</td></tr><tr><td>Q1</td><td>Q2</td><td>Q3</td><td>Q4</td></tr><tr><td>华东</td><td>320</td><td>360</td><td>410</td><td>480</td><td>1570</td></tr><tr><td>华南</td><td>280</td><td>300</td><td>350</td><td>390</td><td>1320</td></tr><tr><td>华北</td><td>260</td><td>270</td><td>330</td><td>380</td><td>1240</td></tr><tr><td>西南</td><td>150</td><td>170</td><td>200</td><td>230</td><td>750</td></tr></tbody></table>\n注:数据未经审计。",
+    "text": "表 1 2025 年各区域季度营收\n<table><tr><td rowspan=\"2\">区域</td><td colspan=\"2\">上半年</td><td colspan=\"2\">下半年</td><td rowspan=\"2\">全年合计</td></tr><tr><td>Q1</td><td>Q2</td><td>Q3</td><td>Q4</td></tr><tr><td>华东</td><td>320</td><td>360</td><td>410</td><td>480</td><td>1570</td></tr><tr><td>华南</td><td>280</td><td>300</td><td>350</td><td>390</td><td>1320</td></tr><tr><td>华北</td><td>260</td><td>270</td><td>330</td><td>380</td><td>1240</td></tr><tr><td>西南</td><td>150</td><td>170</td><td>200</td><td>230</td><td>750</td></tr></table>\n注:数据未经审计。",
     "level": 0,
     "page": 2,
     "bbox": [
@@ -389,7 +405,7 @@
   },
   {
     "kind": "image",
-    "text": "2025年各区域季度营收\n图 1 2025 年各区域季度营收\n从图 1 可以看出，四个区域的营收均逐季上升，其中华北区第三季度增幅最大，环比增长\n22.2%，主要得益于两个政务云项目在三季度完成验收。西南区基数较小，但全年增速达到",
+    "text": "2025年各区域季度营收\n图 1 2025 年各区域季度营收",
     "level": 0,
     "page": 2,
     "bbox": [
@@ -407,7 +423,37 @@
   },
   {
     "kind": "text",
-    "text": "53.3%，是增长最快的区域，明年将继续加大在成都和重庆两地的投入，并计划在第二季度新设贵阳办事处以覆盖",
+    "text": "从图 1 可以看出，四个区域的营收均逐季上升，其中华北区第三季度增幅最大，环比增长",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.079,
+      0.752,
+      0.783,
+      0.768
+    ],
+    "extra": {
+      "mineru_type": "chart_footnote"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "22.2%，主要得益于两个政务云项目在三季度完成验收。西南区基数较小，但全年增速达到",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.079,
+      0.767,
+      0.792,
+      0.784
+    ],
+    "extra": {
+      "mineru_type": "chart_footnote"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "53.3%，是增长最快的区域，明年将继续加大在成都和重庆两地的投入，并计划在第二季度新设贵阳办事处以覆盖云南与贵州市场，预计可带来约 300 万元的新增收入。",
     "level": 0,
     "page": 2,
     "bbox": [
@@ -417,22 +463,8 @@
       0.814
     ],
     "extra": {
-      "mineru_type": "text"
-    }
-  },
-  {
-    "kind": "text",
-    "text": "云南与贵州市场，预计可带来约 300 万元的新增收入。",
-    "level": 0,
-    "page": 3,
-    "bbox": [
-      0.079,
-      0.071,
-      0.506,
-      0.088
-    ],
-    "extra": {
-      "mineru_type": "text"
+      "mineru_type": "text",
+      "page_end": 3
     }
   },
   {

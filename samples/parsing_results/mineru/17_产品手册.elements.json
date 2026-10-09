@@ -50,7 +50,6 @@
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -61,7 +60,6 @@
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -72,7 +70,6 @@
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -91,7 +88,6 @@
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -112,7 +108,6 @@
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -154,7 +149,7 @@
   },
   {
     "kind": "table",
-    "text": "表 1 各版本价格\n<table><tbody><tr><td rowspan=\"2\"><p>版本</p><p></p></td><td colspan=\"2\"><p>订阅</p><p></p></td><td rowspan=\"2\"><p>备注</p><p></p></td></tr><tr><td><p>月费（元）</p></td><td><p>年费（元）</p></td></tr><tr><td><p>基础版</p></td><td><p>999</p></td><td><p>9,990</p></td><td><p>不含技术支持</p></td></tr><tr><td><p>标准版</p></td><td><p>2,999</p></td><td><p>29,990</p></td><td><p>工作日支持</p></td></tr><tr><td><p>企业版</p></td><td><p>面议</p></td><td><p>面议</p></td><td><p>7×24 小时支持</p></td></tr></tbody></table>",
+    "text": "表 1 各版本价格\n<table><tr><td rowspan=\"2\">版本</td><td colspan=\"2\">订阅</td><td rowspan=\"2\">备注</td></tr><tr><td>月费（元）</td><td>年费（元）</td></tr><tr><td>基础版</td><td>999</td><td>9,990</td><td>不含技术支持</td></tr><tr><td>标准版</td><td>2,999</td><td>29,990</td><td>工作日支持</td></tr><tr><td>企业版</td><td>面议</td><td>面议</td><td>7×24 小时支持</td></tr></table>",
     "level": 0,
     "page": 1,
     "bbox": null,
@@ -257,7 +252,7 @@
   },
   {
     "kind": "table",
-    "text": "<table><tbody><tr><td><p>术语</p></td><td><p>说明</p></td></tr><tr><td><p>RRF</p></td><td><p>倒数排名融合，一种多路召回融合方法</p></td></tr><tr><td><p>SLA</p></td><td><p>服务等级协议，约定可用性与响应时间</p></td></tr></tbody></table>",
+    "text": "| 术语 | 说明 |\n| --- | --- |\n| RRF | 倒数排名融合，一种多路召回融合方法 |\n| SLA | 服务等级协议，约定可用性与响应时间 |",
     "level": 0,
     "page": 1,
     "bbox": null,

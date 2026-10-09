@@ -60,3 +60,12 @@ git push
 | `22_图表_季度趋势.png` | 纯图表图片 | 四条折线，华东 Q4 最高（480） |
 
 OFD 格式本机无法生成，没有样例。
+
+## 修改适配器后重新生成结果（不需要 MinerU）
+
+`mineru_raw/` 里保存了 MinerU 的原始输出，修改 `learn_rag/parsing/external.py` 后可以直接回放，几秒就能看到新结果：
+
+```bash
+python scripts/export_parsed.py samples/parsing --mineru --no-cache \
+    --replay samples/parsing_results/mineru_raw --out samples/parsing_results/mineru
+```

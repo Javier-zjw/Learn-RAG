@@ -370,25 +370,38 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
 | `command` | `mineru-kit` | MinerU 命令行名称或绝对路径 |
 | `timeout` | `1800` | 单个文件的解析超时（秒） |
 | `raw_dir` | 不保存 | 另存 MinerU 原始结果 zip 的目录，用于排查 |
+| `replay_dir` | 不读取 | 优先读取该目录里已保存的结果 zip，不调用 MinerU，用于修改适配器后快速验证 |
 | `env_file` | `.mineru.env` | MinerU 运行环境文件，相对路径按项目根目录解析；设为 `null` 时不读取 |
 
 **MinerU 输出到 `Element` 的映射**
+
+这部分规则按 MinerU 4.x 在 22 个验证样例上的真实输出（`samples/parsing_results/mineru_raw/`）核对过。
 
 | MinerU 块类型 | Element | 说明 |
 | --- | --- | --- |
 | `doc_title` | 标题（1 级） | |
 | `paragraph_title` | 标题 | 层级取 MinerU 给出的 `level` |
 | 正文等其他文字块 | 段落 | 行内公式保留为 `$...$`，超链接保留文字 |
-| `list` | 段落 | 列表项按行拼接 |
-| `table` | 表格 | 表题 + HTML 表格 + 表注拼在一起，切分时不会被拆开；表格截图存入资产库 |
-| `image` / `chart` | 图片 | 文本为图题和图注，没有图题时为 `[图片]` / `[图表]`；原图存入资产库 |
+| `list` / `index` | 段落 | 每项一行，嵌套的子列表每深一层缩进两个空格 |
+| `page_footnote` | 段落（标记 `footnote`） | PDF 的页脚注释和 **PPT 的演讲者备注**在 MinerU 里都是它，属于正文内容 |
+| `table` | 表格 | 表题 + 表格 + 表注拼在一起；表格截图存入资产库 |
+| `chart` | 表格 / 图片 | **原生图表**（PPT、Excel 里的图表）的 `chart_body` 是图表数据，转成表格保留；图片形式的图表只有图题 |
+| `image` | 图片 | 文本为图题 + 图片描述（`image_body` 只是文件名时忽略）；没有任何文字时为 `[图片]`，原图存入资产库 |
+| 图片、图表的图注 | 段落 | 单独输出：MinerU 有时会把紧跟在图后面的正文段落识别成图注 |
 | `equation` | 公式 | LaTeX |
 | `code` | 代码 | 包含代码标题和脚注 |
-| `header` / `footer` / `page_number` / `page_footnote` / `aside_text` / `discarded` | 丢弃 | 页眉、页脚、页码等噪声 |
+| `header` / `footer` / `page_number` / `aside_text` / `discarded` | 丢弃 | 页眉、页脚、页码等噪声 |
 
-- 标记了 `continues_prev` 的跨页段落和跨页表格，会合并到前一个同类块，并记录结束页码 `page_end`。
+- **表格统一表示**：没有合并单元格的表格转成 Markdown（结构切分器可以按行切分超长表格，每块都带表题和表头）；
+  有合并单元格的保留为紧凑 HTML（去掉缩进和 `<p>` 等排版标签）。只有日期的单元格去掉 `00:00:00`。
+- **折行合并**：MinerU 按版面块输出，同一段话常被拆成两块，它的 `continues_prev` 标记既会漏标也会误标
+  （样例中真正跨页的句子没有标，扫描件里印章和下一页的条款反而被标成了一段），所以正文按版面几何判断：
+  上一块不以句末标点结尾，并且以逗号、顿号结尾或写满了所在栏的宽度时，与下一块（同页下方或下一页开头）合并，记录结束页码 `page_end`。
+  只作用于带坐标的 PDF 和图片；跨页续表仍按 `continues_prev` 合并，续页重复的表头会去掉。
 - 图片按内容的 SHA-256 命名，同一张图只存一份。`Element.extra` 中记录 `asset`（资产库内相对路径）、`sha256` 和 `mime`，切分后汇总到块元数据的 `assets` 字段，回答时可以取回原图。
 - zip 中的图片路径会做安全检查，不存在或路径不安全的图片只保留文字，不影响整份文档。
+- **回放**：`export_parsed.py --replay <目录>`（即配置 `replay_dir`）直接读取之前用 `--raw` 保存的 MinerU 结果，
+  修改适配器后几秒内就能在真实输出上重新验证，不必重跑 MinerU。
 
 **常见问题**
 

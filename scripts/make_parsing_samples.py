@@ -130,12 +130,38 @@ def _pdf_text(page, rect, text: str, size: float = 10.5, font: str = "wqy", alig
 
     fontfile = CJK_FONT if font == "wqy" else None
     box = pymupdf.Rect(rect)
+    if font == "wqy":
+        text = _wrap_cjk(text, box.width - 2, size)
     left = page.insert_textbox(box, text, fontsize=size, fontname=font, fontfile=fontfile, align=align)
     if -size * 1.5 <= left < 0:      # 差不到一行：把框向下放大一点重写（放不下时 PyMuPDF 什么都不写）
         box.y1 += -left + 2
         left = page.insert_textbox(box, text, fontsize=size, fontname=font, fontfile=fontfile, align=align)
     if left < 0:
         raise ValueError(f"文本放不下（溢出 {-left:.0f}pt），请调整版面：{text[:30]}")
+
+
+def _wrap_cjk(text: str, width: float, size: float) -> str:
+    """
+    按字符宽度自己折行。PyMuPDF 只在空格处换行，中文长句会在“2025 年”这样的空格处断出很短的行，
+    和真实的中文排版（任意汉字之间都能换行、每行写满）不符，会误导解析结果的判断。
+    英文单词和数字（如 4,860、18.6%）作为整体，不从中间拆开。
+    """
+    import re
+
+    import pymupdf
+
+    font = pymupdf.Font(fontfile=CJK_FONT)
+    lines = []
+    for paragraph in text.split("\n"):
+        line = ""
+        for token in re.findall(r"[A-Za-z0-9.,%/:@_+=\-]+|\s|.", paragraph):
+            if line.strip() and font.text_length(line + token, fontsize=size) > width:
+                lines.append(line.rstrip())
+                line = token.lstrip()
+            else:
+                line += token
+        lines.append(line.rstrip())
+    return "\n".join(lines)
 
 
 def _pdf_header_footer(page, number: int, total: int) -> None:

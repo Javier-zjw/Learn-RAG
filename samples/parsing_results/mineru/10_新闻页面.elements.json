@@ -37,12 +37,11 @@
   },
   {
     "kind": "text",
-    "text": "1. 实时计算引擎\n- 支持 Kafka 与 Pulsar 数据源- 窗口聚合延迟低于 1 秒\n2. 新增 12 种图表类型\n3. 权限模型升级为基于角色的访问控制（RBAC）",
+    "text": "1. 实时计算引擎\n  - 支持 Kafka 与 Pulsar 数据源\n  - 窗口聚合延迟低于 1 秒\n2. 新增 12 种图表类型\n3. 权限模型升级为基于角色的访问控制（RBAC）",
     "level": 0,
     "page": 1,
     "bbox": null,
     "extra": {
-      "list": true,
       "mineru_type": "list"
     }
   },
@@ -56,7 +55,7 @@
   },
   {
     "kind": "table",
-    "text": "<table> <tr><th rowspan=\"2\">版本</th><th colspan=\"2\">订阅价格（元）</th><th rowspan=\"2\">技术支持</th></tr> <tr><th>月费</th><th>年费</th></tr> <tr><td>基础版</td><td>999</td><td>9,990</td><td>无</td></tr> <tr><td>标准版</td><td>2,999</td><td>29,990</td><td>工作日</td></tr> <tr><td>企业版</td><td colspan=\"2\">面议</td><td>7×24 小时</td></tr> </table>",
+    "text": "<table><tr><td rowspan=\"2\">版本</td><td colspan=\"2\">订阅价格（元）</td><td rowspan=\"2\">技术支持</td></tr><tr><td>月费</td><td>年费</td></tr><tr><td>基础版</td><td>999</td><td>9,990</td><td>无</td></tr><tr><td>标准版</td><td>2,999</td><td>29,990</td><td>工作日</td></tr><tr><td>企业版</td><td colspan=\"2\">面议</td><td>7×24 小时</td></tr></table>",
     "level": 0,
     "page": 1,
     "bbox": null,
