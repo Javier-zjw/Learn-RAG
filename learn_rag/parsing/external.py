@@ -53,8 +53,13 @@ class MinerUParser(DocumentParser):
             ocr_mode: str = "auto",
             image_analysis: bool = True,
             raw_dir: str | None = None,
+            env_file: str | None = ".mineru.env",
     ) -> None:
-        """raw_dir: 设置后把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于排查解析问题"""
+        """
+        raw_dir:  设置后把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于排查解析问题
+        env_file: MinerU 运行环境文件，与 scripts/start_mineru.sh 读的是同一份，保证两边的模型目录、
+                  VLM 服务地址一致；相对路径按项目根解析，设为 None 时不读取
+        """
         if tier not in {"flash", "basic", "standard", "advanced"}:
             raise ValueError(f"不支持的 MinerU 解析档位：{tier}")
         self.tier = tier
@@ -71,13 +76,41 @@ class MinerUParser(DocumentParser):
             path = Path(assets_dir)
             self.assets_dir = path if path.is_absolute() else _PROJECT_ROOT / path
         # 模型权重默认放在项目内的 mineru_model_weight/（ModelScope 缓存根目录），
-        # 不依赖运行机器的用户目录；需要共享缓存时在配置里改 models_dir 即可
-        if models_dir is None:
-            self.models_dir = _PROJECT_ROOT / "mineru_model_weight"
-        else:
-            path = Path(models_dir)
-            self.models_dir = path if path.is_absolute() else _PROJECT_ROOT / path
+        # 不依赖运行机器的用户目录；.mineru.env 里设置了 MINERU_HOME 时以它为准
+        default_home = _PROJECT_ROOT / "mineru_model_weight" if models_dir is None else Path(models_dir)
+        if not default_home.is_absolute():
+            default_home = _PROJECT_ROOT / default_home
+        self.env = self._runtime_env(env_file, default_home)
+        self.models_dir = Path(self.env["MINERU_HOME"])
         self.models_dir.mkdir(parents=True, exist_ok=True)
+
+    def _runtime_env(self, env_file: str | None, default_home: Path) -> dict[str, str]:
+        """
+        MinerU 子进程的环境变量，优先级：.mineru.env > 当前 shell 的环境变量 > 解析器默认值。
+
+        .mineru.env 的优先级最高，是为了和 start_mineru.sh（用 source 加载同一个文件）保持一致：
+        启动服务和解析文档用的永远是同一套模型目录和 VLM 地址。实际生效的值会打印到日志里。
+        """
+        env = dict(os.environ)
+        source = "未找到 .mineru.env，使用 shell 环境变量和默认值"
+        if env_file:
+            path = Path(env_file) if Path(env_file).is_absolute() else _PROJECT_ROOT / env_file
+            if path.is_file():
+                env.update(_read_env_file(path))
+                source = f"已加载 {path}"
+        defaults = {
+            "MINERU_HOME": str(default_home.resolve()),
+            "MINERU_MODEL_SOURCE": "modelscope",
+            "MINERU_MODEL_SMALL_BACKEND": "onnx",
+            "MINERU_MODEL_VLM_ENGINE": "llama-cpp",
+        }
+        if self.vlm_server_url:
+            defaults["MINERU_MODEL_VLM_SERVER_URL"] = self.vlm_server_url
+        for key, value in defaults.items():
+            env.setdefault(key, value)
+        logger.info("MinerU 运行环境：%s；MINERU_HOME=%s；VLM 服务=%s",
+                    source, env["MINERU_HOME"], env.get("MINERU_MODEL_VLM_SERVER_URL", "未设置"))
+        return env
 
     def parse(self, path: Path) -> list[Element]:
         with tempfile.TemporaryDirectory() as out:
@@ -89,16 +122,8 @@ class MinerUParser(DocumentParser):
                 cmd += ["--tier", self.tier, "--ocr-mode", self.ocr_mode]
                 if not self.image_analysis:
                     cmd.append("--disable-image-analysis")
-            # 权重来源和缓存位置由解析器显式控制：换机器、换用户目录都不影响模型加载
-            env = dict(os.environ)
-            env["MINERU_HOME"] = str(self.models_dir.resolve())
-            env["MINERU_MODEL_SOURCE"] = "modelscope"
-            env["MINERU_MODEL_SMALL_BACKEND"] = "onnx"
-            env["MINERU_MODEL_VLM_ENGINE"] = "llama-cpp"
-            if self.vlm_server_url:
-                env["MINERU_MODEL_VLM_SERVER_URL"] = self.vlm_server_url
             try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=self.timeout, env=env)
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=self.timeout, env=self.env)
             except FileNotFoundError:
                 raise RuntimeError(f"找不到 MinerU 命令 '{self.command}'，请先安装：pip install -U \"mineru>=4.0,<5\"") from None
             except subprocess.CalledProcessError as exc:
@@ -121,6 +146,23 @@ class MinerUParser(DocumentParser):
                     return elements
             except (OSError, ValueError, KeyError) as exc:
                 raise RuntimeError(f"读取 MinerU 结果 zip 失败：{exc}") from None
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """按 shell 的写法读取 KEY=VALUE：支持 export 前缀、引号、注释行和行尾注释，展开 $VAR / ~。"""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].strip()
+        values[key.strip()] = os.path.expanduser(os.path.expandvars(value))
+    return values
 
 
 def _persist_mineru_assets(elements: list[Element], archive: ZipFile, assets_dir: Path | None) -> None:

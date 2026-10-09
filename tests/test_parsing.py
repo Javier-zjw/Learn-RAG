@@ -358,6 +358,28 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertIn("standard", cmd)
         self.assertEqual(len(elements), 9)
 
+    def test_mineru_reads_env_file(self):
+        """.mineru.env 与启动脚本共用：文件里的值优先于 shell 环境变量和解析器默认值。"""
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".mineru.env"
+            env_file.write_text(
+                "# 注释行\n"
+                f"export MINERU_HOME={tmp}/models\n"
+                "MINERU_MODEL_VLM_SERVER_URL='http://10.0.0.8:30000'  \n"
+                "MINERU_MODEL_VLM_ENGINE=vllm  # 行尾注释\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"MINERU_MODEL_VLM_ENGINE": "llama-cpp", "MINERU_MODEL_SOURCE": "local"}):
+                parser = MinerUParser(env_file=str(env_file))
+            self.assertEqual(parser.models_dir, Path(tmp) / "models")
+            self.assertTrue(parser.models_dir.is_dir())
+            self.assertEqual(parser.env["MINERU_MODEL_VLM_SERVER_URL"], "http://10.0.0.8:30000")
+            self.assertEqual(parser.env["MINERU_MODEL_VLM_ENGINE"], "vllm")     # 文件优先于 shell
+            self.assertEqual(parser.env["MINERU_MODEL_SOURCE"], "local")        # shell 优先于默认值
+            self.assertEqual(parser.env["MINERU_MODEL_SMALL_BACKEND"], "onnx")  # 都没有时用默认值
+
     def test_mineru_keeps_raw_zip(self):
         def fake_run(cmd, **_):
             self._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]), images={})
@@ -407,10 +429,11 @@ class TestExternalAdapters(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             # 清掉外部环境里的同名变量，验证解析器自己注入了正确的值
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("MINERU_MODEL_SOURCE", None)
-                os.environ.pop("MINERU_HOME", None)
+                for key in ("MINERU_HOME", "MINERU_MODEL_SOURCE", "MINERU_MODEL_SMALL_BACKEND",
+                            "MINERU_MODEL_VLM_ENGINE", "MINERU_MODEL_VLM_SERVER_URL"):
+                    os.environ.pop(key, None)
                 with patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run):
-                    MinerUParser(models_dir=tmp).parse(Path("a.pdf"))
+                    MinerUParser(models_dir=tmp, env_file=None).parse(Path("a.pdf"))
             self.assertEqual(seen["env"]["MINERU_HOME"], str(Path(tmp).resolve()))
             self.assertEqual(seen["env"]["MINERU_MODEL_SOURCE"], "modelscope")
             self.assertEqual(seen["env"]["MINERU_MODEL_SMALL_BACKEND"], "onnx")
@@ -419,7 +442,11 @@ class TestExternalAdapters(unittest.TestCase):
 
     def test_mineru_default_weights_dir_in_project(self):
         root = Path(__file__).resolve().parents[1]
-        parser = MinerUParser()
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("MINERU_HOME", None)
+            parser = MinerUParser(env_file=None)
         self.assertEqual(parser.models_dir, root / "mineru_model_weight")
         self.assertTrue(parser.models_dir.is_dir())
 
