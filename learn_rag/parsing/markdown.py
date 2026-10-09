@@ -1,129 +1,28 @@
 """
-parsing.markdown —— Markdown 与 Element 之间的互转，以及表格的统一表示。
+parsing.markdown —— Markdown 与 Element 之间的互转。
 
 Markdown 是各种解析工具的"通用语"：纯文本文件本身是 Markdown，VLM OCR 输出 Markdown，
 MinerU / Docling 也都能导出 Markdown。把"Markdown -> Element"写成一个函数，
 所有这些来源就共享同一套结构识别逻辑，不必各写一份。
 
-表格同理：各工具输出的表格有 Markdown、带缩进的 HTML、带 <p> 标签的 HTML 等多种写法，
-normalize_table 把它们统一成两种：没有合并单元格的用 Markdown，有合并单元格的用紧凑 HTML。
+表格的统一表示（normalize_table / table_to_markdown）在 core/tables.py，这里转出一份，
+各解析器照旧从本模块导入。
 """
 
 from __future__ import annotations
 
-import html
 import re
-from html.parser import HTMLParser
 from pathlib import Path
 
 from ..core.interfaces import DocumentParser
 from ..core.registry import registry
+from ..core.tables import normalize_table, table_to_markdown
 from ..core.types import Element
+
+__all__ = ["MarkdownParser", "markdown_to_elements", "normalize_table", "table_to_markdown"]
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _IMAGE = re.compile(r"^!\[([^\]]*)\]\(([^)]*)\)\s*$")
-
-
-def table_to_markdown(rows: list[list[str]]) -> str:
-    """
-    二维单元格 -> Markdown 表格，第一行视为表头。
-
-    单元格里的换行和竖线会破坏表格结构，统一转义；各行列数不齐时补空，
-    这样下游按行切分表格时总能拿到完整表头。
-    """
-    rows = [[_clean_cell(c) for c in row] for row in rows if any(str(c or "").strip() for c in row)]
-    if not rows:
-        return ""
-    width = max(len(r) for r in rows)
-    rows = [r + [""] * (width - len(r)) for r in rows]
-    lines = ["| " + " | ".join(rows[0]) + " |", "|" + " --- |" * width]
-    lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
-    return "\n".join(lines)
-
-
-# 只有日期没有时间的单元格，经 Excel / 解析工具转出来常带一个零点时间，去掉它
-_MIDNIGHT = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T]00:00:00$")
-
-
-def _clean_cell(value: object) -> str:
-    return _cell_text(value).replace("|", "\\|")
-
-
-def _cell_text(value: object) -> str:
-    text = "" if value is None else str(value)
-    return _MIDNIGHT.sub(r"\1", " ".join(text.split()))
-
-
-def normalize_table(table: str) -> str:
-    """
-    统一表格的表示：
-      - 没有合并单元格的 HTML 表格转成 Markdown，结构切分器可以按行切分超长表格；
-      - 有合并单元格时保留 HTML（Markdown 表达不了跨行跨列），但只保留结构，
-        去掉缩进、换行和 <p>、<strong> 等排版标签，避免空白撑大切分块。
-    不是 HTML 表格的文本（如已经是 Markdown）原样返回。
-    """
-    rows = _HtmlTable.parse(table) if "<table" in table.lower() else []
-    if not rows:
-        return table.strip()
-    if all(rowspan == colspan == 1 for row in rows for _, rowspan, colspan in row):
-        return table_to_markdown([[text for text, _, _ in row] for row in rows])
-    lines = []
-    for row in rows:
-        cells = []
-        for text, rowspan, colspan in row:
-            attrs = (f' rowspan="{rowspan}"' if rowspan > 1 else "") + (f' colspan="{colspan}"' if colspan > 1 else "")
-            cells.append(f"<td{attrs}>{html.escape(_cell_text(text), quote=False)}</td>")
-        lines.append("<tr>" + "".join(cells) + "</tr>")
-    return "<table>" + "".join(lines) + "</table>"
-
-
-class _HtmlTable(HTMLParser):
-    """读出 HTML 表格的单元格：[[(文字, rowspan, colspan), ...], ...]。只看第一层表格，嵌套表格的文字并入外层单元格。"""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.rows: list[list[tuple[str, int, int]]] = []
-        self._cell: list[str] | None = None
-        self._span = (1, 1)
-        self._depth = 0
-
-    @classmethod
-    def parse(cls, table: str) -> list[list[tuple[str, int, int]]]:
-        parser = cls()
-        parser.feed(table)
-        parser.close()
-        return [row for row in parser.rows if row]
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "table":
-            self._depth += 1
-        elif self._depth == 1 and tag == "tr":
-            self.rows.append([])
-        elif self._depth == 1 and tag in ("td", "th"):
-            values = dict(attrs)
-            self._cell, self._span = [], (_span(values.get("rowspan")), _span(values.get("colspan")))
-        elif tag == "br" and self._cell is not None:
-            self._cell.append(" ")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "table":
-            self._depth -= 1
-        elif self._depth == 1 and tag in ("td", "th") and self._cell is not None:
-            if not self.rows:
-                self.rows.append([])
-            self.rows[-1].append(("".join(self._cell), *self._span))
-            self._cell = None
-
-    def handle_data(self, data: str) -> None:
-        if self._cell is not None:
-            self._cell.append(data)
-
-
-def _span(value: str | None) -> int:
-    try:
-        return max(1, int(value or 1))
-    except ValueError:
-        return 1
 
 
 def markdown_to_elements(text: str, *, page: int | None = None) -> list[Element]:
