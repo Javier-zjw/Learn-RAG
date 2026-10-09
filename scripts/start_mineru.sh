@@ -9,7 +9,7 @@ MINERU_BIN="$PYTHON_ENV/bin/mineru"
 MINERU_KIT="$PYTHON_ENV/bin/mineru-kit"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "缺少 $ENV_FILE：请先创建本机 MinerU 环境文件。" >&2
+  echo "缺少 ${ENV_FILE}：请先创建本机 MinerU 环境文件。" >&2
   exit 1
 fi
 set -a
@@ -17,7 +17,7 @@ source "$ENV_FILE"
 set +a
 
 if [[ ! -x "$MINERU_BIN" || ! -x "$MINERU_KIT" ]]; then
-  echo "MinerU 未安装在 $PYTHON_ENV，请先执行：$PYTHON_ENV/bin/python3.12 -m pip install 'mineru>=4.0,<5'" >&2
+  echo "MinerU 未安装在 ${PYTHON_ENV}，请先执行：${PYTHON_ENV}/bin/python3.12 -m pip install 'mineru>=4.0,<5'" >&2
   exit 1
 fi
 if [[ ! -d "$MINERU_HOME" ]]; then
@@ -39,7 +39,7 @@ else
     >>"$MINERU_HOME/logs/vlm-server.log" 2>&1 &
   vlm_pid=$!
   echo "$vlm_pid" >"$MINERU_HOME/vlm-server.pid"
-  echo "正在启动 CPU VLM 服务（PID $vlm_pid）..."
+  echo "正在启动 CPU VLM 服务（PID ${vlm_pid}）..."
 
   ready=false
   for _ in $(seq 1 120); do
