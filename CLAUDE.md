@@ -24,8 +24,8 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 
 ## 目录结构
 
-- `learn_rag/core/`：数据契约（`types.py`）、抽象接口（`interfaces.py`）、注册表、配置加载、中英文分词。不依赖任何上层模块。
-- `learn_rag/ingest/`：数据源与切分器（含结构感知切分器）
+- `learn_rag/core/`：数据契约（`types.py`）、抽象接口（`interfaces.py`）、注册表、配置加载、中英文分词与 token 估算（`text.py`）、表格统一表示（`tables.py`）。不依赖任何上层模块。
+- `learn_rag/ingest/`：数据源与切分器（`structure.py` 父子分块，`pieces.py` 切分单个超长元素）
 - `learn_rag/parsing/`：文档解析（PDF / Office / 网页 / OCR / 外部工具适配器）与文件数据源
 - `learn_rag/embedding/`：文本向量化
 - `learn_rag/store/`：向量索引（flat / chroma）、BM25、`KnowledgeBase`（离线门面）
@@ -64,10 +64,20 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **解析器接口只有一个方法**：`DocumentParser.parse(path) -> list[Element]`。每种工具（原生库、MinerU、Docling、VLM OCR）各写一个适配器，把自己的输出翻译成 `Element`，差异不外泄。
 - **选择策略按文档类型**：Office 与网页直接读结构（不做 OCR）；有文字层的 PDF 用原生解析，页面缺少文字层时自动交给 OCR；扫描件与图片用 VLM OCR；需要高精度版面时可在配置中换成 MinerU / Docling。
 - **分层落盘**：解析结果按「文件哈希 + 解析器」缓存为 JSON，改切分策略时不必重新 OCR；解析失败时按配置的备选解析器降级，单个文件失败不影响整批。
-- **表格统一表示**：所有来源的表格都经 `parsing/markdown.py` 的 `normalize_table` 处理，没有合并单元格的用 Markdown，有合并单元格的用紧凑 HTML。
+- **表格统一表示**：所有来源的表格都经 `core/tables.py` 的 `normalize_table` 处理，没有合并单元格的用 Markdown，有合并单元格的用紧凑 HTML。
 - **外部工具的输出以真实样例为准**：改适配器前先看 `samples/parsing_results/*_raw/` 里的原始输出，改完用 `export_parsed.py --replay` 在真实输出上验证。
-- **结构感知切分**：以标题为边界切分并在块前拼接标题路径；表格整体保留，超长表格按行切分并重复表头；页眉页脚在解析层丢弃；每个块记录页码与标题路径以便溯源。
+- 页眉页脚在解析层丢弃，切分层不再处理噪声。
 - 重型依赖（pymupdf、python-docx、python-pptx、openpyxl、MinerU、Docling）一律延迟导入，测试中用 mock 或小样例文件，不依赖 GPU 与网络。
+
+## 分块（`learn_rag/ingest/structure.py`）
+
+- **父子分块**：子块（`chunk_size`）进向量索引和 BM25 负责召回，父块（`parent_size`）只存储，命中后由 `KnowledgeBase.expand` 换成父块交给大模型。子块用 `metadata.parent_id` 指向父块；`Chunker.split` 同时返回父块和子块，由知识库按"被引用即父块"区分，不给 `Chunk` 加类型字段。
+- **沿结构切分**：父块不跨章（文档标题下的第一级标题），子块不跨小节；块首拼"文档标题 > 章节路径"；公式、图片紧跟前一个元素，冒号结尾的引导句带上后一个元素。
+- **超长元素在 `pieces.py` 里切**：段落按句、表格按行（每片带表题和表头，合并单元格先用 `flatten_table` 展开）、代码按行；公式和图片不切。新增元素类型时在这里补切法，不要在切分器里加分支。
+- **大小按 token 估算**：一律用 `core/text.py` 的 `count_tokens`，不要用 `len()`；它向上取整，装箱时相加不会超出预算。
+- **展开放在精排之后**：精排在短小的子块上做，再展开、去重、取 `top_k`；不生成父块的切分器不受影响，管线里不为它写分支。
+- 父块保存在索引目录的 `parents.jsonl`，改动知识库持久化时三者（向量、BM25、父块）要一起落盘和加载。
+- 改切分规则后用 `export_parsed.py --replay` 重新生成 `samples/parsing_results/`，对照 `chunks.jsonl` 检查效果。
 
 ## 代码风格
 

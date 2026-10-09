@@ -4,7 +4,8 @@
 每个文档生成三个文件（默认输出到 runs/parsed/，runs/ 已在 .gitignore 中）：
     <文件名>.md              解析结果渲染成的 Markdown：看标题层级、表格、段落顺序
     <文件名>.elements.json   每个结构元素的类型、层级、页码、坐标、附加信息：看解析细节
-    <文件名>.chunks.jsonl    结构切分后的块和元数据：看最终进入知识库的内容
+    <文件名>.chunks.jsonl    父子分块的结果：role 为 parent 的块只存储、交给大模型，
+                             child 的块进入索引、用于召回（metadata.parent_id 指向父块）
 另外在输出目录生成：
     summary.md               每个文件用了哪个解析器、耗时、各类元素数量；没导出的文件也会列出
     export.log               完整日志（解析器失败、降级的原因都在这里）
@@ -38,6 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 from learn_rag.core.config import load_config
 from learn_rag.core.registry import registry
+from learn_rag.core.text import count_tokens
 from learn_rag.ingest import structure  # noqa: F401  触发结构切分器注册
 from learn_rag.parsing.source import FileSource
 
@@ -102,14 +104,17 @@ def main() -> None:
         elements = [asdict(e) for e in doc.elements]
         (out / f"{name}.elements.json").write_text(json.dumps(elements, ensure_ascii=False, indent=2), encoding="utf-8")
         chunks = chunker.split(doc)
+        parent_ids = {c.metadata["parent_id"] for c in chunks if c.metadata.get("parent_id")}
         with (out / f"{name}.chunks.jsonl").open("w", encoding="utf-8") as fh:
             for c in chunks:
-                fh.write(json.dumps({"id": c.chunk_id, "text": c.text, "metadata": c.metadata}, ensure_ascii=False) + "\n")
+                role = "parent" if c.chunk_id in parent_ids else "child"
+                row = {"id": c.chunk_id, "role": role, "tokens": count_tokens(c.text), "text": c.text, "metadata": c.metadata}
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         kinds = Counter(e.kind for e in doc.elements)
         rows.append({"file": doc.doc_id, "parser": doc.metadata["parser"], "seconds": elapsed,
-                     "kinds": kinds, "chunks": len(chunks)})
-        logging.info("导出 %s：解析器=%s 耗时=%.1fs 元素=%d 块=%d",
-                     doc.doc_id, doc.metadata["parser"], elapsed, len(doc.elements), len(chunks))
+                     "kinds": kinds, "chunks": len(chunks) - len(parent_ids), "parents": len(parent_ids)})
+        logging.info("导出 %s：解析器=%s 耗时=%.1fs 元素=%d 子块=%d 父块=%d", doc.doc_id, doc.metadata["parser"],
+                     elapsed, len(doc.elements), len(chunks) - len(parent_ids), len(parent_ids))
 
     _write_summary(out / "summary.md", Path(args.docs), rows, args)
     print(f"\n共导出 {len(rows)} 个文档 → {out.resolve()}（汇总见 summary.md，日志见 export.log）")
@@ -132,12 +137,12 @@ def _write_summary(path: Path, docs: Path, rows: list[dict], args: argparse.Name
         f"- 输入：`{docs}`　参数：mineru={args.mineru} no_cache={args.no_cache} raw={args.raw or '-'} "
         f"replay={args.replay or '-'}",
         "",
-        "| 文件 | 解析器 | 耗时(秒) | " + " | ".join(kinds) + " | 块数 |",
-        "| --- | --- | --- | " + " | ".join("---" for _ in kinds) + " | --- |",
+        "| 文件 | 解析器 | 耗时(秒) | " + " | ".join(kinds) + " | 子块 | 父块 |",
+        "| --- | --- | --- | " + " | ".join("---" for _ in kinds) + " | --- | --- |",
     ]
     for r in rows:
         counts = " | ".join(str(r["kinds"].get(k, 0)) for k in kinds)
-        lines.append(f"| {r['file']} | {r['parser']} | {r['seconds']:.1f} | {counts} | {r['chunks']} |")
+        lines.append(f"| {r['file']} | {r['parser']} | {r['seconds']:.1f} | {counts} | {r['chunks']} | {r['parents']} |")
 
     exported = {r["file"] for r in rows}
     if docs.is_dir():

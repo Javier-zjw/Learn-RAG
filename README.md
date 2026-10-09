@@ -41,12 +41,12 @@
 | --- | --- | --- |
 | 数据源 `source` | `memory`、`jsonl`、`directory`、`files` | 统一为 `Document` 流；`files` 解析 PDF / Office / 网页 / 图片（见下文“文档解析”） |
 | 文档解析 `parser` | `markdown`、`html`、`docx`、`pptx`、`xlsx`、`csv`、`tsv`、`pdf`、`vlm_ocr`、`libreoffice`、`mineru`、`docling` | 各种文件统一解析为结构元素 `Element` |
-| 切分 `chunker` | `fixed`、`recursive`、`markdown`、`structure` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 / 基于解析结构切分 |
+| 切分 `chunker` | `fixed`、`recursive`、`markdown`、`structure` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 / 基于解析结构的父子分块（见下文“结构感知的父子分块”） |
 | 向量化 `encoder` | `hashing`、`openai_compat`、`sentence_transformers`、`cached` | 特征哈希（零依赖离线可跑）/ 任意 OpenAI 兼容 embedding 服务（超批量上限时自动减半重试）/ 本地模型 / 带缓存的装饰器 |
 | 向量索引 `index` | `flat`、`chroma` | 暴力内积精确检索 / Chroma 持久化 HNSW（可调 `space`、`ef_construction`、`max_neighbors`、`ef_search`） |
 | 倒排索引 | `BM25Index` | 与向量索引同步写入、同步落盘 |
 
-`KnowledgeBase`（`store/knowledge_base.py`）作为离线门面，对外只暴露 `add / save / load / stats`，内部完成“切分 → 攒批向量化 → 写向量索引 → 写 BM25 索引”。
+`KnowledgeBase`（`store/knowledge_base.py`）作为离线门面，对外只暴露 `add / expand / save / load / stats`，内部完成“切分 → 区分父子块 → 攒批向量化 → 写向量索引 → 写 BM25 索引”；子块进索引，父块只存储，`expand` 把命中的子块换成父块。
 持久化目录按 collection 隔离，避免不同数据集的 BM25 索引互相覆盖；Chroma 未安装时会给出带排查建议的明确报错，而不是含糊的“未注册”。
 
 #### 文档解析（`learn_rag/parsing`）
@@ -68,7 +68,46 @@
 - `configs/parsing.yaml` 预置企业级路由：PDF 首选 MinerU、Word 首选 Docling，未安装或失败时自动退回内置解析器；两路解析出的图片统一存入内容寻址资产库（按 SHA-256 去重），图注进入索引，资产路径记录在块元数据 `assets` 字段中。
 - MinerU 4.x 模型权重通过 ModelScope 自动下载到项目内的 `mineru_model_weight/`（已 gitignore），解析器通过 `MINERU_HOME` 加载该目录；CPU 部署可用 `scripts/start_mineru.sh` 读取 `.mineru.env` 并启动本地 VLM 服务，解析器读取同一个 `.mineru.env`。
 - `FileSource` 按“文件内容哈希 + 解析器 + 参数”缓存解析结果，调整切分策略、重建索引时不会重复解析；缓存原子写入、损坏自动重建；目录扫描跳过隐藏文件、Office 锁文件和未下载完成的临时文件，可按 `max_file_size` 限制单文件大小；单个文件失败只记日志并跳过。
-- `structure` 切分器以标题为边界切分，块首拼接“文档标题 > 章节路径”；表格单独成块，超长表格按行切分并在每块重复表头；每个块记录章节路径和页码范围，便于溯源。
+- 解析结果交给 `structure` 切分器做父子分块，见下一节。
+
+#### 结构感知的父子分块（`learn_rag/ingest/structure.py`）
+
+检索和生成对块大小的要求是矛盾的：块小，向量表达集中，召回才准；块大，交给大模型的上下文才完整。父子分块把两件事拆开：
+
+```
+                ┌─ 父块（≤ parent_size，默认 1200 token）：只存储，不进索引 ──────────┐
+文档 ─▶ 章 / 小节 ─┤                                                               │ 命中后展开
+                └─ 子块（≤ chunk_size，默认 300 token）：进向量索引和 BM25 ─▶ 召回 ─▶ 精排 ─┘─▶ 大模型
+```
+
+切分沿着解析出的结构走，规则如下：
+
+| 规则 | 说明 |
+| --- | --- |
+| 章 | 文档标题之下的第一级标题算一章（PPT 的每一页就是一章）。父块不跨章，子块不跨小节 |
+| 父块 | 同一章内按顺序把小节装进父块，装满换下一个；小节本身超长时按元素拆开。父块正文保留小节标题 |
+| 子块 | 每个小节内按顺序装元素，块首拼上“文档标题 > 章节路径”，片段脱离原文也知道自己在讲什么 |
+| 不拆开的组合 | 公式、图片紧跟前一个元素（“按下式计算：”和公式，“如图 2 所示”和图片）；以冒号结尾的引导句带上后一个元素（列表、表格） |
+| 超长段落 | 按句切开，句子本身超长（OCR 结果、长网址）才按字数硬切 |
+| 超长表格 | 按行切开，每块都带表题和表头，表注跟在最后一块；合并单元格先展开：跨行的值复制到每一行，多层表头合成一行（“上半年 Q1”），切出的每一行都是自包含的 |
+| 代码、公式、图片 | 代码按行切，不把一行断开；公式和图片描述不切 |
+| 去冗余 | 只有一个子块的父块不生成（和子块内容相同） |
+| 纯文本 | 没有解析结构的文本（jsonl 语料）按空行分段后走同一套规则 |
+
+- **大小按 token 估算**（`core/text.py` 的 `count_tokens`）：中文每字约 1 个，英文每词约 1.3 个，中英文混排时块大小一致；只计正文，不计块首路径。
+- **检索流程**：召回和精排都在子块上做（短而集中，交叉编码器打分更准、不会被截断），之后 `KnowledgeBase.expand` 把子块换成父块，同一父块下的多个子块合并为一条，取够 `top_k` 个不同的上下文；命中了哪些子块记在 `debug["children"]` 中。切分器不生成父块时这一步不改变任何结果。
+- **图片和图表**：图片二进制存在内容寻址资产库，图注 / 模型描述随所在小节进入子块，资产路径汇总到块元数据的 `assets` 字段；原生图表（PPT / Excel）由 MinerU 转成数据表，按表格切分。
+- **持久化**：父块保存在索引目录的 `parents.jsonl` 中，`build` 后 `--reuse-index` 复用时同样可以展开。
+- **溯源**：每个块记录 `section`（章节路径）、`page_start` / `page_end`、`kinds`（包含的元素类型）、`assets`，子块记录 `parent_id`。
+
+```yaml
+chunker:
+  type: structure
+  chunk_size: 300        # 子块
+  parent_size: 1200      # 父块；设为 0 关闭父块，只按小节切分
+```
+
+`scripts/export_parsed.py` 导出的 `<文件名>.chunks.jsonl` 中，`role` 标明父块 / 子块，`tokens` 是估算的 token 数，可以直接检查切分效果（样例见 `samples/parsing_results/*/`）。
 
 ### 3. 在线检索与生成链路
 
@@ -123,11 +162,11 @@
 | `chroma.yaml` | Chroma 持久化向量库 |
 | `ds_scifact.yaml` / `ds_fiqa.yaml` | BEIR 基准，对齐 nDCG@10 口径 |
 | `ds_cmrc.yaml` | 中文 CMRC2018，可同时评检索与生成 |
-| `parsing.yaml` | 文档解析 + 结构感知切分 |
+| `parsing.yaml` | 文档解析 + 结构感知的父子分块 |
 
 ### 8. 测试（`tests/`）
 
-基于 `unittest`：`test_core.py` 覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”；`test_parsing.py` 覆盖各格式解析、MinerU / Docling / OCR 适配器（mock）、解析缓存与降级、结构切分和端到端问答。样例文件在测试中现场生成。
+基于 `unittest`：`test_core.py` 覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”；`test_parsing.py` 覆盖各格式解析、MinerU / Docling / OCR 适配器（mock）、解析缓存与降级和端到端问答；`test_chunking.py` 覆盖父子分块的各条规则、表格展开与按行切分、知识库的父块存储、展开与持久化。样例文件在测试中现场生成。
 
 ---
 
@@ -141,7 +180,7 @@ Document ──▶ Chunker ──▶ TextEncoder ──▶ VectorIndex (flat / c
 
             ┌──────────────────── 在线（ask） ──────────────────────┐
 Question ──▶ QueryTransformer ──▶ Retriever (vector / bm25 / hybrid-RRF)
-         ──▶ Reranker ──▶ Generator (+LLM) ──▶ RagResult（答案 + 证据 + 耗时）
+         ──▶ Reranker ──▶ 父块展开 ──▶ Generator (+LLM) ──▶ RagResult（答案 + 证据 + 耗时）
             └──────────────── RagPipeline（门面） ──────────────────┘
 
 EvalDataset ──▶ Evaluator(RagPipeline, Metrics) ──▶ EvalReport（Markdown + JSON）
@@ -157,7 +196,7 @@ EvalDataset ──▶ Evaluator(RagPipeline, Metrics) ──▶ EvalReport（Mar
 Learn-RAG/
 ├── learn_rag/
 │   ├── core/          # 数据契约、抽象接口、注册表、配置加载、文本处理
-│   ├── ingest/        # 数据源 + 切分器（含结构感知切分）
+│   ├── ingest/        # 数据源 + 切分器（含结构感知的父子分块）
 │   ├── parsing/       # 文档解析：PDF / Office / 网页 / OCR / MinerU / Docling
 │   ├── embedding/     # 文本向量化
 │   ├── store/         # 向量索引（flat / chroma）、BM25、KnowledgeBase
@@ -341,7 +380,7 @@ python scripts/export_parsed.py path/to/docs --mineru     # 所有 MinerU 支持
 | --- | --- | --- |
 | `<文件名>.md` | 解析结果渲染成的 Markdown | 标题层级、表格、段落顺序 |
 | `<文件名>.elements.json` | 每个结构元素的类型、层级、页码、坐标、附加信息 | 页眉页脚是否去掉、跨页段落是否合并、图片资产路径 |
-| `<文件名>.chunks.jsonl` | 结构切分后的块和元数据 | 最终进入知识库的内容和溯源信息 |
+| `<文件名>.chunks.jsonl` | 父子分块的结果：`role`、估算的 `tokens`、正文和元数据 | 最终进入知识库的内容、父子关系和溯源信息 |
 
 输出目录里还会生成 `summary.md`（每个文件用的解析器、耗时、各类元素数量，以及没有导出的文件）和 `export.log`（完整日志）。
 `--no-cache` 强制重新解析；`--raw <目录>` 另存 MinerU 的原始结果 zip，用于核对适配器有没有漏掉信息。
@@ -469,7 +508,10 @@ python scripts/run_ablation.py --suite all --dataset hotpotqa \
   - 原生 PDF / Word / PPT 解析器暂不处理内嵌图片（图表不会生成文字描述）；需要时改用 `mineru` 或 `docling`。
   - 原生 PDF 解析按文字块顺序读取，多栏排版可能出现阅读顺序错乱，复杂版面建议使用 `mineru`。
   - MinerU 4.x 已按 `middle_json.zip` 输出适配，图片、图表和表格截图进入内容寻址资产库；复杂文档仍建议用自己的样本做召回质量验证。
-  - 结构切分已记录章节路径，但“小块检索、返回整节上下文”的父子块检索尚未实现。
+- 分块的已知局限：
+  - 没有描述的图片（MinerU 只输出 `[图片]`）只能靠所在章节的标题被召回；需要时可以接入视觉模型为图片生成描述。
+  - 章节划分依赖解析出的标题。没有标题的长文档（如样例中的扫描合同，条款没有被识别为标题）只能按大小切分父块。
+  - 尚未实现基于向量相似度的语义切分和用大模型为每个块生成上下文说明（Contextual Retrieval）；解析结构和标题路径已覆盖它们的大部分收益，可在评测后按需加入。
 
 ---
 
