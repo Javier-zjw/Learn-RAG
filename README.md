@@ -109,6 +109,8 @@
 - `inspect_dataset.py`：评测前检查 `data/` 下数据集结构是否能被正确读取。
 - `run_ablation.py`：消融实验，一次只改一个变量，结果以相对基线的增量呈现并连同完整配置落盘。
   内置套件：`chunk_size`、`channel`、`rerank`、`index`、`space`、`hnsw_build`、`hnsw_search`、`top_k`。
+- `export_parsed.py`：把文档解析结果导出为 Markdown、结构元素 JSON 和切分块，用于检查 MinerU 或内置解析器的效果；`--mineru` 让 Word / PPT / Excel 也优先走 MinerU。
+- `start_mineru.sh`：读取 `.mineru.env`，启动本机 MinerU 的 llama.cpp VLM 服务和 MinerU 服务（已运行则跳过），详见“使用 MinerU 解析复杂 PDF”。
 - `make_agentic_data.py`：生成 Agentic RAG 演示数据（带元数据的文件、SQLite 订单库、标注了 `expected_tools` 的问答集），为后续“自主决策”模式做准备。
 
 ### 7. 预置实验配置（`configs/`）
@@ -164,7 +166,7 @@ Learn-RAG/
 │   ├── eval/          # 数据集适配、指标、评测执行器
 │   └── cli.py         # 命令行入口
 ├── configs/           # YAML 实验配置
-├── scripts/           # 数据准备、数据检查、消融实验脚本
+├── scripts/           # 数据准备、数据检查、消融实验、MinerU 服务启动脚本
 ├── tests/             # 单元测试
 ├── pyproject.toml     # 打包与依赖声明
 └── env.example.txt    # 模型/密钥配置模板
@@ -241,6 +243,130 @@ python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chr
 ```
 
 扫描件和图片需要配置 OCR 模型（`.env` 中的 `OCR_BASE_URL` / `OCR_API_KEY` / `OCR_MODEL`，并在 `configs/parsing.yaml` 中打开 `ocr`）。
+
+### 6. 使用 MinerU 解析复杂 PDF
+
+内置的 PyMuPDF 解析器适合版面规整的电子 PDF；多栏排版、复杂表格、公式和扫描件交给 MinerU 4.x。
+`configs/parsing.yaml` 已默认把 PDF 路由为 `[mineru, pdf]`：MinerU 可用时优先使用，未安装、服务未启动或解析失败时自动退回 PyMuPDF，导入不会中断。
+
+**工作流程**
+
+```
+FileSource ──▶ MinerUParser
+                 └─ mineru-kit parse <文件> -o <临时目录>/<文件名>.zip --format zip --tier standard --ocr-mode auto
+                      └─ 读取 zip 中的 middle_json.json ──▶ 翻译成 Element ──▶ 结构切分 / 建索引
+                      └─ zip 中的图片、图表、表格截图 ──▶ 内容寻址资产库（.cache/assets）
+```
+
+解析器通过命令行调用 MinerU（命令行是它最稳定的对外接口），调用时显式设置以下环境变量，
+保证模型从项目目录加载、与运行机器的用户目录无关：
+
+| 环境变量 | 取值 |
+| --- | --- |
+| `MINERU_HOME` | `options.mineru.models_dir`（默认项目内的 `mineru_model_weight/`） |
+| `MINERU_MODEL_SOURCE` | `modelscope`（权重从 ModelScope 下载） |
+| `MINERU_MODEL_SMALL_BACKEND` | `onnx` |
+| `MINERU_MODEL_VLM_ENGINE` | `llama-cpp` |
+| `MINERU_MODEL_VLM_SERVER_URL` | `options.mineru.vlm_server_url`（默认 `http://127.0.0.1:30000`） |
+
+**第一步：安装**
+
+```bash
+pip install -e ".[mineru]"     # 即 mineru>=4.0,<5，提供 mineru 与 mineru-kit 命令
+```
+
+模型权重首次运行时从 ModelScope 自动下载到 `mineru_model_weight/`（已在 `.gitignore` 中）。内网机器可以把这个目录整体拷贝过去。
+
+**第二步：创建本机配置 `.mineru.env`（含本机绝对路径，已在 `.gitignore` 中，不提交）**
+
+```bash
+MINERU_HOME=/绝对路径/Learn-RAG/mineru_model_weight   # 与 options.mineru.models_dir 保持一致
+MINERU_MODEL_VLM_SERVER_URL=http://127.0.0.1:30000      # 与 options.mineru.vlm_server_url 保持一致
+MINERU_VLM_HOST=127.0.0.1
+MINERU_VLM_PORT=30000
+```
+
+**第三步：启动服务（CPU 部署）**
+
+```bash
+# MinerU 安装在哪个 Python 环境，就用 MINERU_PYTHON_ENV 指过去（脚本默认 /opt/anaconda3/envs/langchain_env）
+MINERU_PYTHON_ENV=/path/to/python/env bash scripts/start_mineru.sh
+```
+
+脚本依次完成：
+1. 加载 `.mineru.env`，检查 `mineru`、`mineru-kit` 命令和模型目录是否存在；
+2. 访问 `<VLM 服务地址>/v1/models` 检查 VLM 服务。未运行时用 `mineru-kit vlm-server --engine llama-cpp` 在后台启动，最多等待 120 秒；
+3. 执行 `mineru server start` 启动 MinerU 服务，并打印 `mineru server status --json`。
+
+VLM 服务的日志写在 `$MINERU_HOME/logs/vlm-server.log`，进程号写在 `$MINERU_HOME/vlm-server.pid`。
+VLM 模型单独作为服务运行，避免每次解析都在进程内重新加载大模型。
+
+**第四步：检查解析效果**
+
+```bash
+python scripts/export_parsed.py path/to/docs              # PDF 走 MinerU，其他格式按 parsing.yaml 路由
+python scripts/export_parsed.py path/to/docs --mineru     # Word / PPT / Excel 也优先交给 MinerU，便于对比
+```
+
+每个文档在 `runs/parsed/`（可用 `--out` 指定）下生成三个文件：
+
+| 文件 | 内容 | 用来检查 |
+| --- | --- | --- |
+| `<文件名>.md` | 解析结果渲染成的 Markdown | 标题层级、表格、段落顺序 |
+| `<文件名>.elements.json` | 每个结构元素的类型、层级、页码、坐标、附加信息 | 页眉页脚是否去掉、跨页段落是否合并、图片资产路径 |
+| `<文件名>.chunks.jsonl` | 结构切分后的块和元数据 | 最终进入知识库的内容和溯源信息 |
+
+终端会打印每个文档实际使用的解析器：显示 `mineru` 说明 MinerU 生效；显示其他解析器说明 MinerU 失败后已降级，原因在上方的 WARNING 日志里。
+解析结果按文件内容缓存在 `.cache/parsed/`，修改 MinerU 配置后想重新解析，先删除对应的 `mineru-*.json`。
+
+**第五步：问答与建库**
+
+```bash
+python -m learn_rag.cli ask --config configs/parsing.yaml --docs path/to/docs -q "问题"
+python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chroma.yaml --docs path/to/docs
+```
+
+MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式固定使用 `flash`（直接读取文件结构，不需要模型），解析器对这些格式不会传 `--tier`、`--ocr-mode` 等参数。
+
+**配置项**（`configs/parsing.yaml` 的 `parsing.options.mineru`）
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `tier` | `standard` | 解析档位：`flash` / `basic` / `standard` / `advanced`；`standard` 适合复杂版面、表格、公式和扫描件。仅对 PDF 和图片生效 |
+| `ocr_mode` | `auto` | 传给 `--ocr-mode` |
+| `image_analysis` | `true` | 设为 `false` 时追加 `--disable-image-analysis` |
+| `vlm_server_url` | `http://127.0.0.1:30000` | llama.cpp VLM 服务地址 |
+| `models_dir` | `mineru_model_weight` | 模型权重目录，相对路径按项目根目录解析 |
+| `assets_dir` | 不保存 | 图片资产库目录，`parsing.yaml` 中设为 `.cache/assets`，相对路径按项目根目录解析 |
+| `command` | `mineru-kit` | MinerU 命令行名称或绝对路径 |
+| `timeout` | `1800` | 单个文件的解析超时（秒） |
+
+**MinerU 输出到 `Element` 的映射**
+
+| MinerU 块类型 | Element | 说明 |
+| --- | --- | --- |
+| `doc_title` | 标题（1 级） | |
+| `paragraph_title` | 标题 | 层级取 MinerU 给出的 `level` |
+| 正文等其他文字块 | 段落 | 行内公式保留为 `$...$`，超链接保留文字 |
+| `list` | 段落 | 列表项按行拼接 |
+| `table` | 表格 | 表题 + HTML 表格 + 表注拼在一起，切分时不会被拆开；表格截图存入资产库 |
+| `image` / `chart` | 图片 | 文本为图题和图注，没有图题时为 `[图片]` / `[图表]`；原图存入资产库 |
+| `equation` | 公式 | LaTeX |
+| `code` | 代码 | 包含代码标题和脚注 |
+| `header` / `footer` / `page_number` / `page_footnote` / `aside_text` / `discarded` | 丢弃 | 页眉、页脚、页码等噪声 |
+
+- 标记了 `continues_prev` 的跨页段落和跨页表格，会合并到前一个同类块，并记录结束页码 `page_end`。
+- 图片按内容的 SHA-256 命名，同一张图只存一份。`Element.extra` 中记录 `asset`（资产库内相对路径）、`sha256` 和 `mime`，切分后汇总到块元数据的 `assets` 字段，回答时可以取回原图。
+- zip 中的图片路径会做安全检查，不存在或路径不安全的图片只保留文字，不影响整份文档。
+
+**常见问题**
+
+| 现象 | 处理 |
+| --- | --- |
+| 日志提示找不到 `mineru-kit` | 当前 Python 环境没装 MinerU，或用 `options.mineru.command` 指定绝对路径 |
+| 日志提示解析超时 | 调大 `options.mineru.timeout`，或换用更轻的 `tier` |
+| PDF 实际走了 PyMuPDF | 查看日志中 `解析器 mineru 处理 ... 失败` 的原因；块元数据 `parser` 字段记录了实际使用的解析器 |
+| VLM 服务没起来 | 查看 `$MINERU_HOME/logs/vlm-server.log`，或执行 `curl <VLM 服务地址>/v1/models` |
 
 ---
 
