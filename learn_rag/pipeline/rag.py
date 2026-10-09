@@ -7,7 +7,7 @@ pipeline.rag —— 端到端 RAG 管线（系统级门面）。
 背后是完整的六段式流程：
 
     切分 → 向量化 → 索引 ──(离线)
-    改写 → 召回 → 精排 → 装配 → 生成 ──(在线)
+    改写 → 召回 → 精排 → 父块展开 → 装配 → 生成 ──(在线)
 
 这是"深类"的终极形态：接口两个方法，内部承载全部复杂度。
 同时它**不自己实现任何算法**，只负责编排 —— 每一步都是可替换的组件。
@@ -23,7 +23,7 @@ from typing import Any
 
 from ..core.interfaces import LLM, Generator, Reranker, Retriever, TextEncoder
 from ..core.registry import registry
-from ..core.types import Document, RagResult, ScoredChunk, Timer
+from ..core.types import Answer, Document, RagResult, ScoredChunk, Timer
 from ..store.knowledge_base import KnowledgeBase
 
 # 触发各实现模块的注册（import 副作用）。集中在这里，使用者只 import 本模块即可。
@@ -54,16 +54,8 @@ class RagPipeline:
         """
         一次问答。返回值带齐了答案、证据、各阶段耗时 —— 评测与排障都靠它
         """
-        top_k = top_k or self.top_k
         timings: dict[str, float] = {}
-
-        with Timer(timings, "retrieve"):
-            candidates: list[ScoredChunk] = self.retriever.retrieve(question, max(self.candidate_k, top_k))
-
-        with Timer(timings, "rerank"):
-            contexts = (
-                self.reranker.rerank(question, candidates, top_k) if self.reranker else candidates[:top_k]
-            )
+        contexts = self._contexts(question, top_k or self.top_k, timings)
 
         with Timer(timings, "generate"):
             answer = self.generator.generate(question, contexts)
@@ -75,19 +67,27 @@ class RagPipeline:
         """
         只跑检索，不调生成 —— 调检索参数时用它，能省掉 90% 的时间和费用
         """
-        top_k = top_k or self.top_k
         timings: dict[str, float] = {}
+        contexts = self._contexts(question, top_k or self.top_k, timings)
+        timings["total"] = sum(timings.values())
+        return RagResult(question=question, answer=Answer(text=""), contexts=contexts, timings=timings)
 
+    def _contexts(self, question: str, top_k: int, timings: dict[str, float]) -> list[ScoredChunk]:
+        """
+        召回 -> 精排 -> 父块展开。
+
+        精排在子块上做：子块短而集中，交叉编码器打分更准，也不会被截断。
+        精排保留全部候选的顺序再展开，因为几个子块可能属于同一个父块，展开去重后
+        才能取够 top_k 个不同的上下文；没有父块时展开不改变任何东西。
+        """
         with Timer(timings, "retrieve"):
-            candidates = self.retriever.retrieve(question, max(self.candidate_k, top_k))
+            candidates: list[ScoredChunk] = self.retriever.retrieve(question, max(self.candidate_k, top_k))
 
         with Timer(timings, "rerank"):
-            contexts = self.reranker.rerank(question, candidates, top_k) if self.reranker else candidates[:top_k]
+            ranked = self.reranker.rerank(question, candidates, len(candidates)) if self.reranker else candidates
 
-        timings["total"] = sum(timings.values())
-        from ..core.types import Answer
-
-        return RagResult(question=question, answer=Answer(text=""), contexts=contexts, timings=timings)
+        with Timer(timings, "expand"):
+            return self.kb.expand(ranked)[:top_k]
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "RagPipeline":

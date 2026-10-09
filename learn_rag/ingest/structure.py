@@ -1,126 +1,188 @@
 """
-ingest.structure —— 结构感知切分：利用解析得到的 Element 切分，而不是在纯文本上猜边界。
+ingest.structure —— 结构感知的父子分块。
 
-规则只有四条：
-  1. 以标题为边界：一个块只包含同一章节的内容，块首拼上"文档标题 > 章节路径"，
+检索和生成对块大小的要求是矛盾的：块小，向量表达集中，召回才准；块大，交给大模型的上下文才完整。
+父子分块把两件事拆开：
+  子块（chunk_size，默认 300 token）进入向量索引和 BM25，负责"找得准"；
+  父块（parent_size，默认 1200 token）只存不索引，命中子块后换成它所在的父块交给大模型，负责"看得全"。
+
+切分沿着文档结构走，规则如下：
+  1. 章：文档标题之下的第一级标题算一章（PPT 的每一页就是一章）。父块不跨章，子块不跨小节；
+  2. 父块：同一章内按顺序把小节装进父块，装满 parent_size 换下一个，一个小节本身超长就按元素拆开；
+  3. 子块：在每个小节内按顺序装元素，装满 chunk_size 换下一个，块首拼上"文档标题 > 章节路径"，
      片段脱离原文后依然知道自己在讲什么；
-  2. 同一章节内的段落依次装入块，装满 chunk_size 就换下一块；单个超长段落用递归切分；
-  3. 表格单独成块、不与正文混排；超长的 Markdown 表格按行切分，每块都重复表头；
-  4. 每个块记录章节路径、页码范围和包含的元素类型，回答时可以溯源到页。
+  4. 不能拆开的组合：公式和图片紧跟前一个元素（"按下式计算："和公式、"如图 2 所示"和图片），
+     以冒号结尾的引导句紧跟后一个元素（"部署前需要准备以下环境："和后面的列表、表格）；
+  5. 一个元素自己就放不下时交给 pieces.split_element：段落按句、表格按行（每片带表题和表头）、代码按行切；
+  6. 只有一个子块的父块不生成：它和子块内容相同，展开没有意义，还要多存一份。
 
-没有结构的文档（如 jsonl 语料）自动退回递归切分，调用方无需区分。
+子块的 metadata.parent_id 指向父块。父块和子块都从 split() 返回，由知识库决定谁进索引、谁只存储。
+每个块都记录章节路径、页码范围、元素类型和图片资产，回答时可以溯源到页、取回原图。
+没有解析结构的纯文本（如 jsonl 语料）按空行分段后走同一套规则，调用方无需区分。
 """
 
 from __future__ import annotations
 
+import re
+
 from ..core.interfaces import Chunker
 from ..core.registry import registry
 from ..core.types import Chunk, Document, Element
-from .chunkers import RecursiveChunker
+from .pieces import element_size, split_element
+
+# 一个小节：(标题路径, 正文元素, 所在章的序号)
+Section = tuple[list[str], list[Element], int]
 
 
 @registry.register("chunker", "structure")
 class StructureChunker(Chunker):
-    def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
+    def __init__(self, chunk_size: int = 300, parent_size: int = 1200) -> None:
+        if parent_size and parent_size <= chunk_size:
+            raise ValueError("parent_size 必须大于 chunk_size；设为 0 表示不生成父块")
         self.chunk_size = chunk_size
-        self._recursive = RecursiveChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        self.parent_size = parent_size
 
     def split(self, document: Document) -> list[Chunk]:
-        if not document.elements:
-            return self._recursive.split(document)
-
+        elements = document.elements or _paragraphs(document.text)
         chunks: list[Chunk] = []
-        for path, elements in _sections(document.elements):
-            trail = path if path and path[0] == document.title else [document.title, *path]
-            header = "[" + " > ".join(trail) + "]\n"
-            for group in self._pack(elements):
-                body = "\n\n".join(e.to_markdown() for e in group)
-                chunk = Chunk.of(document, header + body, len(chunks))
-                chunk.metadata.update(_describe(path, group))
-                chunks.append(chunk)
+        for group in self._parent_groups(_sections(elements)):
+            children = [(path, piece) for path, body in group for piece in _pack(body, self.chunk_size)]
+            parent_id = None
+            if self.parent_size and len(children) > 1:
+                path, text = _render_parent(group)
+                parent = _make_chunk(document, path, text, [e for _, body in group for e in body], len(chunks))
+                chunks.append(parent)
+                parent_id = parent.chunk_id
+            for path, piece in children:
+                text = "\n\n".join(e.to_markdown() for e in piece)
+                child = _make_chunk(document, path, text, piece, len(chunks))
+                if parent_id:
+                    child.metadata["parent_id"] = parent_id
+                chunks.append(child)
         return chunks
 
-    def _pack(self, elements: list[Element]) -> list[list[Element]]:
-        """把一个章节的元素装进若干块。表格总是单独成块；其他元素按长度依次装箱。"""
-        groups: list[list[Element]] = []
-        current: list[Element] = []
-        size = 0
-
-        def close() -> None:
-            nonlocal current, size
-            if current:
-                groups.append(current)
-            current, size = [], 0
-
-        for element in elements:
-            if element.kind == "table":
-                close()
-                groups.extend([piece] for piece in self._split_table(element))
-                continue
-            for piece in self._split_long(element):
-                length = len(piece.to_markdown())
-                if current and size + length > self.chunk_size:
-                    close()
-                current.append(piece)
-                size += length + 2
-        close()
+    def _parent_groups(self, sections: list[Section]) -> list[list[tuple[list[str], list[Element]]]]:
+        """把小节分成若干组，每组对应一个父块：同一章内按顺序装箱，超长小节先按元素拆成几段。"""
+        if not self.parent_size:
+            return [[(path, body)] for path, body, _ in sections]
+        groups: list[list[tuple[list[str], list[Element]]]] = []
+        last_chapter, used = None, 0
+        for path, body, chapter in sections:
+            for piece in _pack(body, self.parent_size):
+                size = sum(element_size(e) for e in piece)
+                if groups and chapter == last_chapter and used + size <= self.parent_size:
+                    groups[-1].append((path, piece))
+                    used += size
+                else:
+                    groups.append([(path, piece)])
+                    last_chapter, used = chapter, size
         return groups
 
-    def _split_long(self, element: Element) -> list[Element]:
-        """超长的段落按递归规则切开；公式、代码、图片描述保持完整，切开反而会破坏含义。"""
-        if element.kind != "text" or len(element.text) <= self.chunk_size:
-            return [element]
-        pieces = self._recursive._split_text(element.text)
-        return [Element("text", p.strip(), page=element.page, extra=dict(element.extra)) for p in pieces if p.strip()]
 
-    def _split_table(self, table: Element) -> list[Element]:
-        """
-        Markdown 表格超长时按行切分，每块都带上表题和表头，这样每一块单独看都是完整的表格；
-        表格后面的表注跟在最后一块。HTML 表格（含合并单元格）无法安全地按行切，保持整体。
-        """
-        lines = table.text.splitlines()
-        start = next((i for i, line in enumerate(lines) if line.startswith("|")), None)
-        if len(table.text) <= self.chunk_size or start is None or len(lines) < start + 3:
-            return [table]
-        end = next((i for i in range(start, len(lines)) if not lines[i].startswith("|")), len(lines))
-        head, rows, tail = lines[:start + 2], lines[start + 2:end], lines[end:]
-        budget = self.chunk_size - sum(len(h) + 1 for h in head)
-        pieces: list[list[str]] = [[]]
-        used = 0
-        for row in rows:
-            if pieces[-1] and used + len(row) + 1 > budget:
-                pieces.append([])
-                used = 0
-            pieces[-1].append(row)
-            used += len(row) + 1
-        pieces[-1] += tail
-        return [
-            Element("table", "\n".join(head + piece), page=table.page, extra={**table.extra, "table_part": i + 1})
-            for i, piece in enumerate(pieces)
-        ]
+def _pack(elements: list[Element], budget: int) -> list[list[Element]]:
+    """按顺序把元素装进不超过 budget 的若干组。不能拆开的组合整体装入，整体放不下时才拆开，单个元素超长时切片。"""
+    groups: list[list[Element]] = []
+    current: list[Element] = []
+    used = 0
+    for unit in _units(elements):
+        size = sum(element_size(e) for e in unit)
+        parts = [unit] if size <= budget else [[piece] for e in unit for piece in split_element(e, budget)]
+        for part in parts:
+            size = sum(element_size(e) for e in part)
+            if current and used + size > budget:
+                groups.append(current)
+                current, used = [], 0
+            current.extend(part)
+            used += size
+    if current:
+        groups.append(current)
+    return groups
 
 
-def _sections(elements: list[Element]) -> list[tuple[list[str], list[Element]]]:
-    """按标题把元素分组，返回 [(标题路径, 该章节的非标题元素)]。只有标题没有内容的章节不产生块。"""
-    sections: list[tuple[list[str], list[Element]]] = []
+def _units(elements: list[Element]) -> list[list[Element]]:
+    """把必须放在一起的相邻元素合成一个单元：公式和图片跟着前一个元素，冒号结尾的引导句带上后一个元素。"""
+    units: list[list[Element]] = []
+    for element in elements:
+        if units and (element.kind in ("formula", "image") or _leads_in(units[-1][-1])):
+            units[-1].append(element)
+        else:
+            units.append([element])
+    return units
+
+
+def _leads_in(element: Element) -> bool:
+    return element.kind == "text" and element.text.rstrip().endswith(("：", ":"))
+
+
+def _sections(elements: list[Element]) -> list[Section]:
+    """
+    按标题把元素分组，返回 [(标题路径, 正文元素, 章序号)]。只有标题没有内容的小节不产生块，标题留在下级小节的路径里。
+
+    章的层级：取最高一级标题；但如果最高一级只出现一次且在最前面，它是文档标题（MinerU 的 doc_title、
+    PPT 的封面标题），章从下一级算起。
+    """
+    levels = [max(e.level, 1) for e in elements if e.kind == "heading"]
+    top = min(levels, default=1)
+    if levels and levels[0] == top and levels.count(top) == 1 and len(set(levels)) > 1:
+        top = min(level for level in levels if level > top)
+
+    sections: list[Section] = []
     path: list[str] = []
     body: list[Element] = []
+    chapter = 0
     for element in elements:
         if element.kind == "heading":
             if body:
-                sections.append((path, body))
+                sections.append((path, body, chapter))
             level = max(element.level, 1)
+            if level <= top:
+                chapter += 1
             path = path[: level - 1] + [element.text]
             body = []
         elif element.text.strip():
             body.append(element)
     if body:
-        sections.append((path, body))
+        sections.append((path, body, chapter))
     return sections
 
 
+def _render_parent(group: list[tuple[list[str], list[Element]]]) -> tuple[list[str], str]:
+    """父块的正文：块首路径取各小节的公共前缀，更深的小节标题渲染成 Markdown 标题留在正文里，保留原文层次。"""
+    common = _common_prefix([path for path, _ in group])
+    lines: list[str] = []
+    previous = common
+    for path, body in group:
+        shared = max(len(_common_prefix([path, previous])), len(common))
+        lines.extend("#" * (depth + 1) + " " + path[depth] for depth in range(shared, len(path)))
+        lines.extend(e.to_markdown() for e in body)
+        previous = path
+    return common, "\n\n".join(lines)
+
+
+def _common_prefix(paths: list[list[str]]) -> list[str]:
+    prefix = list(paths[0])
+    for path in paths[1:]:
+        n = 0
+        while n < min(len(prefix), len(path)) and prefix[n] == path[n]:
+            n += 1
+        prefix = prefix[:n]
+    return prefix
+
+
+def _make_chunk(document: Document, path: list[str], body: str, elements: list[Element], position: int) -> Chunk:
+    trail = path if path and path[0] == document.title else [document.title, *path]
+    chunk = Chunk.of(document, "[" + " > ".join(trail) + "]\n" + body, position)
+    chunk.metadata.update(_describe(path, elements))
+    return chunk
+
+
+def _paragraphs(text: str) -> list[Element]:
+    """没有结构的纯文本按空行分段，交给同一套切分规则。"""
+    return [Element("text", p.strip()) for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
 def _describe(path: list[str], group: list[Element]) -> dict[str, object]:
-    """块的溯源信息：章节路径、页码范围、元素类型。"""
+    """块的溯源信息：章节路径、页码范围、元素类型、图片资产。"""
     meta: dict[str, object] = {"section": " > ".join(path), "kinds": sorted({e.kind for e in group})}
     pages = [p for e in group for p in (e.page, e.extra.get("page_end")) if p]
     if pages:

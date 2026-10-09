@@ -1,5 +1,5 @@
 """
-文档解析与结构切分的测试。
+文档解析的测试（结构切分的测试在 test_chunking.py）。
 
 样例文件都在临时目录里现场生成，不提交二进制文件；
 MinerU、Docling、VLM OCR 这类重型依赖一律用假对象或 mock，不依赖 GPU 和网络。
@@ -675,73 +675,6 @@ class TestFileSource(unittest.TestCase):
             with self.assertLogs("learn_rag.parsing.source", level="WARNING"):
                 docs = list(source.load())
         self.assertIn("normal text page", docs[0].text)
-
-
-class TestStructureChunker(unittest.TestCase):
-    def _doc(self, elements):
-        return Document.from_elements("manual.pdf", elements, {"title": "员工手册"})
-
-    def test_sections_paths_and_pages(self):
-        doc = self._doc([
-            Element("heading", "报销", level=1, page=1),
-            Element("text", "差旅标准如下。", page=1),
-            Element("heading", "住宿", level=2, page=2),
-            Element("text", "一线城市 600 元。", page=2, extra={"page_end": 3}),
-            Element("heading", "餐饮", level=2, page=3),   # 只有标题没有内容，不产生块
-            Element("heading", "补贴", level=2, page=3),
-            Element("text", "每天 120 元。", page=4),
-        ])
-        chunks = StructureChunker(chunk_size=200).split(doc)
-        self.assertEqual([c.text.splitlines()[0] for c in chunks],
-                         ["[员工手册 > 报销]", "[员工手册 > 报销 > 住宿]", "[员工手册 > 报销 > 补贴]"])
-        self.assertEqual((chunks[1].metadata["page_start"], chunks[1].metadata["page_end"]), (2, 3))
-        self.assertEqual(chunks[1].metadata["section"], "报销 > 住宿")
-        self.assertEqual(len({c.chunk_id for c in chunks}), 3)
-
-    def test_packs_paragraphs_until_full(self):
-        doc = self._doc([Element("heading", "章", level=1)] + [Element("text", "字" * 40) for _ in range(5)])
-        chunks = StructureChunker(chunk_size=100, chunk_overlap=20).split(doc)
-        self.assertEqual([c.text.count("字" * 40) for c in chunks], [2, 2, 1])
-
-    def test_table_is_isolated_and_split_with_header(self):
-        rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(30)]
-        doc = self._doc([
-            Element("heading", "价格表", level=1),
-            Element("text", "以下为报价。"),
-            Element("table", table_to_markdown(rows)),
-            Element("text", "价格含税。"),
-        ])
-        chunks = StructureChunker(chunk_size=150).split(doc)
-        tables = [c for c in chunks if c.metadata["kinds"] == ["table"]]
-        self.assertGreater(len(tables), 1)
-        for c in tables:
-            lines = c.text.splitlines()
-            self.assertEqual(lines[1:3], ["| 型号 | 价格 |", "| --- | --- |"])
-        all_rows = [l for c in tables for l in c.text.splitlines()[3:]]
-        self.assertEqual(len(all_rows), 30)
-        self.assertIn("以下为报价。", chunks[0].text)
-        self.assertIn("价格含税。", chunks[-1].text)
-
-    def test_long_paragraph_is_split(self):
-        doc = self._doc([Element("text", "。".join(["这是一句话"] * 100))])
-        chunks = StructureChunker(chunk_size=120, chunk_overlap=20).split(doc)
-        self.assertGreater(len(chunks), 3)
-        self.assertTrue(all(c.text.startswith("[员工手册]\n") for c in chunks))
-
-    def test_table_with_caption_and_note_is_split_by_rows(self):
-        """MinerU 的表格前面是表题、后面是表注：每块都带表题和表头，表注跟在最后一块。"""
-        rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(30)]
-        text = "表 1 报价单\n" + table_to_markdown(rows) + "\n注：价格含税。"
-        chunks = StructureChunker(chunk_size=150, chunk_overlap=20).split(self._doc([Element("table", text)]))
-        self.assertGreater(len(chunks), 1)
-        for c in chunks:
-            self.assertEqual(c.text.splitlines()[1:4], ["表 1 报价单", "| 型号 | 价格 |", "| --- | --- |"])
-        self.assertTrue(chunks[-1].text.endswith("注：价格含税。"))
-        self.assertEqual(sum(c.text.count("| M") for c in chunks), 30)
-
-    def test_plain_document_falls_back(self):
-        chunks = StructureChunker(chunk_size=50, chunk_overlap=10).split(Document("d", "纯文本。" * 30))
-        self.assertGreater(len(chunks), 1)
 
 
 class TestTabular(unittest.TestCase):

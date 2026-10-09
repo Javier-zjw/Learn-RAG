@@ -7,6 +7,7 @@ BM25、Hashing 向量、EM/F1 指标全部复用它，保证"索引时怎么切�
 
 from __future__ import annotations
 
+import math
 import re
 import string
 import unicodedata
@@ -65,3 +66,30 @@ def char_ngrams(text: str, n: int = 3) -> list[str]:
     if len(s) < n:
         return [s] if s else []
     return [s[i: i + n] for i in range(len(s) - n + 1)]
+
+
+# 估算 token 用的切分：中文单字、英文单词、数字串、连续符号各算一段
+_COUNT_RE = re.compile(rf"([{_CJK}])|([a-zA-Z]+)|([0-9]+)|([^\s{_CJK}a-zA-Z0-9]+)")
+
+
+def count_tokens(text: str) -> int:
+    """
+    估算文本的 token 数，切分器按它控制块大小。
+
+    按字符数控制大小在中英混排时会失真：300 个字符的中文约 300 token，英文却只有 70 左右。
+    这里按常见分词器的经验值估算：中文每字 1 个，英文每词约 1.3 个，数字每 3 位 1 个，
+    一串连续符号（标点、Markdown 表格的 "| --- |"）1 个。误差在一两成以内，
+    用来定块大小足够，不必为此引入具体模型的分词器。
+    结果向上取整：切分器把各段的估算值相加来装箱，取整只会偏大，装出来的块就不会超出预算。
+    """
+    total = 0.0
+    for cjk, word, digits, _symbols in _COUNT_RE.findall(text or ""):
+        if cjk:
+            total += 1
+        elif word:
+            total += 1.3
+        elif digits:
+            total += (len(digits) + 2) // 3
+        else:
+            total += 1
+    return math.ceil(total)
