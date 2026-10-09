@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "heading",
+    "text": "09_库存清单",
+    "level": 1,
+    "page": null,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "| SKU | 产品 | 仓库 | 库存 | 安全库存 |\n| --- | --- | --- | --- | --- |\n| SKU-01 | 数据平台基础版 | 上海仓 | 120 | 50 |\n| SKU-02 | 数据平台标准版 | 广州仓 | 45 | 60 |\n| SKU-03 | 运维服务包 | 北京仓 | 30 | 20 |",
+    "level": 0,
+    "page": null,
+    "bbox": null,
+    "extra": {
+      "sheet": "09_库存清单"
+    }
+  }
+]

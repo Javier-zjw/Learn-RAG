@@ -109,6 +109,7 @@
 - `inspect_dataset.py`：评测前检查 `data/` 下数据集结构是否能被正确读取。
 - `run_ablation.py`：消融实验，一次只改一个变量，结果以相对基线的增量呈现并连同完整配置落盘。
   内置套件：`chunk_size`、`channel`、`rerank`、`index`、`space`、`hnsw_build`、`hnsw_search`、`top_k`。
+- `make_parsing_samples.py`：生成 `samples/parsing/` 下的文档解析验证样例（22 个文件，覆盖 PDF、扫描件、Office 新旧格式、OpenDocument、RTF、CSV/TSV、网页、网页存档、EPUB、图片），说明见 `samples/README.md`。
 - `export_parsed.py`：把文档解析结果导出为 Markdown、结构元素 JSON 和切分块，用于检查 MinerU 或内置解析器的效果；`--mineru` 让 Word / PPT / Excel 也优先走 MinerU。
 - `start_mineru.sh`：读取 `.mineru.env`，启动本机 MinerU 的 llama.cpp VLM 服务和 MinerU 服务（已运行则跳过），详见“使用 MinerU 解析复杂 PDF”。
 - `make_agentic_data.py`：生成 Agentic RAG 演示数据（带元数据的文件、SQLite 订单库、标注了 `expected_tools` 的问答集），为后续“自主决策”模式做准备。
@@ -168,6 +169,7 @@ Learn-RAG/
 ├── configs/           # YAML 实验配置
 ├── scripts/           # 数据准备、数据检查、消融实验、MinerU 服务启动脚本
 ├── tests/             # 单元测试
+├── samples/           # 文档解析验证样例与解析结果（见 samples/README.md）
 ├── pyproject.toml     # 打包与依赖声明
 └── env.example.txt    # 模型/密钥配置模板
 ```
@@ -303,9 +305,18 @@ VLM 模型单独作为服务运行，避免每次解析都在进程内重新加�
 
 **第四步：检查解析效果**
 
+可以先用仓库自带的验证样例（`samples/parsing/`，说明和预期结果见 `samples/README.md`）：
+
+```bash
+python scripts/export_parsed.py samples/parsing --mineru --no-cache \
+    --raw samples/parsing_results/mineru_raw --out samples/parsing_results/mineru
+```
+
+再换成自己的文档：
+
 ```bash
 python scripts/export_parsed.py path/to/docs              # PDF 走 MinerU，其他格式按 parsing.yaml 路由
-python scripts/export_parsed.py path/to/docs --mineru     # Word / PPT / Excel 也优先交给 MinerU，便于对比
+python scripts/export_parsed.py path/to/docs --mineru     # 所有 MinerU 支持的格式都优先交给 MinerU，便于对比
 ```
 
 每个文档在 `runs/parsed/`（可用 `--out` 指定）下生成三个文件：
@@ -316,6 +327,8 @@ python scripts/export_parsed.py path/to/docs --mineru     # Word / PPT / Excel �
 | `<文件名>.elements.json` | 每个结构元素的类型、层级、页码、坐标、附加信息 | 页眉页脚是否去掉、跨页段落是否合并、图片资产路径 |
 | `<文件名>.chunks.jsonl` | 结构切分后的块和元数据 | 最终进入知识库的内容和溯源信息 |
 
+输出目录里还会生成 `summary.md`（每个文件用的解析器、耗时、各类元素数量，以及没有导出的文件）和 `export.log`（完整日志）。
+`--no-cache` 强制重新解析；`--raw <目录>` 另存 MinerU 的原始结果 zip，用于核对适配器有没有漏掉信息。
 终端会打印每个文档实际使用的解析器：显示 `mineru` 说明 MinerU 生效；显示其他解析器说明 MinerU 失败后已降级，原因在上方的 WARNING 日志里。
 解析结果按文件内容缓存在 `.cache/parsed/`，修改 MinerU 配置后想重新解析，先删除对应的 `mineru-*.json`。
 
@@ -340,6 +353,7 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
 | `assets_dir` | 不保存 | 图片资产库目录，`parsing.yaml` 中设为 `.cache/assets`，相对路径按项目根目录解析 |
 | `command` | `mineru-kit` | MinerU 命令行名称或绝对路径 |
 | `timeout` | `1800` | 单个文件的解析超时（秒） |
+| `raw_dir` | 不保存 | 另存 MinerU 原始结果 zip 的目录，用于排查 |
 
 **MinerU 输出到 `Element` 的映射**
 

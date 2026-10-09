@@ -1,0 +1,236 @@
+[
+  {
+    "kind": "heading",
+    "text": "Hybrid Retrieval with Reciprocal Rank Fusion",
+    "level": 1,
+    "page": 1,
+    "bbox": [
+      129.26300048828125,
+      49.99998092651367,
+      465.7370300292969,
+      74.01197814941406
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "A. Researcher, B. Engineer  |  Galaxy Tech Lab",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      202.0850067138672,
+      84.00003051757812,
+      392.91497802734375,
+      97.34002685546875
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Abstract. We study how dense and sparse retrievers can be combined. Reciprocal Rank Fusion (RRF) merges ranked lists without score calibration and improves nDCG@10 by 4.1 points on our benchmark.",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      70.0,
+      109.9999771118164,
+      514.2957763671875,
+      136.01763916015625
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "1  Method",
+    "level": 2,
+    "page": 1,
+    "bbox": [
+      50.0,
+      180.00001525878906,
+      106.32901000976562,
+      198.00502014160156
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Given ranked lists from m retrievers, the fused score of document d is defined in Eq. (1):",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      50.0,
+      202.00001525878906,
+      423.2645263671875,
+      216.00701904296875
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "(1)",
+    "level": 3,
+    "page": 1,
+    "bbox": [
+      532.7570190429688,
+      250.00001525878906,
+      545.0000610351562,
+      264.00701904296875
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "BM25 scores a term t in document d with the saturation function in Eq. (2):",
+    "level": 3,
+    "page": 1,
+    "bbox": [
+      50.0,
+      286.0000305175781,
+      367.01605224609375,
+      300.00701904296875
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "(2)",
+    "level": 3,
+    "page": 1,
+    "bbox": [
+      532.7570190429688,
+      334.0,
+      545.0000610351562,
+      348.0069885253906
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "2  Results",
+    "level": 2,
+    "page": 1,
+    "bbox": [
+      50.0,
+      380.0,
+      103.44300842285156,
+      398.0050048828125
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Table 1: Retrieval quality on the test set.",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      220.45025634765625,
+      402.0,
+      374.5495910644531,
+      414.6730041503906
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Method Recall@10 MRR@10 nDCG@10",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      90.0,
+      428.0,
+      497.3630065917969,
+      441.1575012207031
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "BM25 0.712 0.534 0.581",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      90.0,
+      448.0,
+      485.6875,
+      460.6730041503906
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Dense 0.768 0.571 0.619",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      90.0,
+      468.0,
+      485.6875,
+      480.6730041503906
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Hybrid (RRF) 0.823 0.602 0.660",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      90.0,
+      488.0,
+      485.6875,
+      500.6730041503906
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "Algorithm 1  Reciprocal Rank Fusion",
+    "level": 3,
+    "page": 1,
+    "bbox": [
+      50.0,
+      520.0000610351562,
+      218.29400634765625,
+      534.5425415039062
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "Input: ranked lists L1..Lm, weights w, constant k 1: for each document d in union(L1..Lm) do 2:     s(d) <- sum_i w_i / (k + rank_i(d)) 3: end for 4: return documents sorted by s(d) descending",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      58.0,
+      546.0,
+      322.59979248046875,
+      599.1474609375
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "References",
+    "level": 2,
+    "page": 1,
+    "bbox": [
+      50.0,
+      655.0,
+      110.63202667236328,
+      673.0050048828125
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "[1] G. Cormack, C. Clarke, S. Buettcher. Reciprocal rank fusion outperforms Condorcet and individual rank learning methods. SIGIR 2009. [2] S. Robertson, H. Zaragoza. The probabilistic relevance framework: BM25 and beyond. 2009.",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      50.0,
+      677.0,
+      531.9323120117188,
+      714.2905883789062
+    ],
+    "extra": {}
+  }
+]

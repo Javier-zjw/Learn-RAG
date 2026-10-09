@@ -1,0 +1,26 @@
+07:40:44 WARNING learn_rag.parsing.source: 解析器 mineru 处理 samples/parsing/01_年度报告_双栏复杂版面.pdf 失败：找不到 MinerU 命令 'mineru-kit'，请先安装：pip install -U "mineru>=4.0,<5"
+07:40:44 INFO root: 导出 01_年度报告_双栏复杂版面.pdf：解析器=pdf 耗时=0.1s 元素=29 块=9
+07:40:44 WARNING learn_rag.parsing.source: 解析器 mineru 处理 samples/parsing/02_扫描件_技术服务合同.pdf 失败：找不到 MinerU 命令 'mineru-kit'，请先安装：pip install -U "mineru>=4.0,<5"
+07:40:44 WARNING learn_rag.parsing.pdf: 02_扫描件_技术服务合同.pdf 第 1 页几乎没有文字层（可能是扫描页），未配置 OCR，已跳过
+07:40:44 WARNING learn_rag.parsing.pdf: 02_扫描件_技术服务合同.pdf 第 2 页几乎没有文字层（可能是扫描页），未配置 OCR，已跳过
+07:40:44 WARNING learn_rag.parsing.source: samples/parsing/02_扫描件_技术服务合同.pdf 没有解析出任何内容，已跳过
+07:40:44 WARNING learn_rag.parsing.source: 解析器 mineru 处理 samples/parsing/03_英文论文_公式与三线表.pdf 失败：找不到 MinerU 命令 'mineru-kit'，请先安装：pip install -U "mineru>=4.0,<5"
+07:40:44 INFO root: 导出 03_英文论文_公式与三线表.pdf：解析器=pdf 耗时=0.0s 元素=18 块=5
+07:40:44 WARNING learn_rag.parsing.source: 解析器 docling 处理 samples/parsing/04_产品手册.docx 失败：未安装 Docling：pip install docling
+07:40:44 INFO root: 导出 04_产品手册.docx：解析器=docx 耗时=0.0s 元素=29 块=10
+07:40:44 INFO root: 导出 05_季度复盘.pptx：解析器=pptx 耗时=0.1s 元素=16 块=6
+07:40:44 INFO root: 导出 06_销售数据.xlsx：解析器=xlsx 耗时=0.1s 元素=8 块=4
+07:40:44 INFO root: 导出 07_员工名单.csv：解析器=csv 耗时=0.0s 元素=2 块=1
+07:40:44 INFO root: 导出 08_员工名单_GBK编码.csv：解析器=csv 耗时=0.0s 元素=2 块=1
+07:40:44 INFO root: 导出 09_库存清单.tsv：解析器=tsv 耗时=0.0s 元素=2 块=1
+07:40:44 INFO root: 导出 10_新闻页面.html：解析器=html 耗时=0.0s 元素=17 块=5
+07:40:45 INFO root: 导出 13_产品手册_旧版.doc：解析器=libreoffice 耗时=1.0s 元素=29 块=10
+07:40:46 INFO root: 导出 14_季度复盘_旧版.ppt：解析器=libreoffice 耗时=1.0s 元素=16 块=6
+07:40:47 INFO root: 导出 15_销售数据_旧版.xls：解析器=libreoffice 耗时=0.8s 元素=8 块=4
+07:40:48 INFO root: 导出 16_产品手册.rtf：解析器=libreoffice 耗时=0.8s 元素=29 块=10
+07:40:48 WARNING learn_rag.parsing.source: 解析器 vlm_ocr 处理 samples/parsing/20_文档截图_报告第2页.png 失败：未配置 OCR 模型：请设置环境变量 OCR_MODEL，或在 parsing.ocr.model 中指定
+07:40:48 ERROR learn_rag.parsing.source: samples/parsing/20_文档截图_报告第2页.png 的所有解析器（vlm_ocr）都失败了，已跳过
+07:40:48 WARNING learn_rag.parsing.source: 解析器 vlm_ocr 处理 samples/parsing/21_拍照_领用登记表.jpg 失败：未配置 OCR 模型：请设置环境变量 OCR_MODEL，或在 parsing.ocr.model 中指定
+07:40:48 ERROR learn_rag.parsing.source: samples/parsing/21_拍照_领用登记表.jpg 的所有解析器（vlm_ocr）都失败了，已跳过
+07:40:48 WARNING learn_rag.parsing.source: 解析器 vlm_ocr 处理 samples/parsing/22_图表_季度趋势.png 失败：未配置 OCR 模型：请设置环境变量 OCR_MODEL，或在 parsing.ocr.model 中指定
+07:40:48 ERROR learn_rag.parsing.source: samples/parsing/22_图表_季度趋势.png 的所有解析器（vlm_ocr）都失败了，已跳过
