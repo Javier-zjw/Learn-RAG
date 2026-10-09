@@ -75,13 +75,15 @@ class StructureChunker(Chunker):
 
     def _split_table(self, table: Element) -> list[Element]:
         """
-        Markdown 表格超长时按行切分，每块都带上表头（前两行），这样每一块单独看都是完整的表格。
-        HTML 表格（含合并单元格）无法安全地按行切，保持整体。
+        Markdown 表格超长时按行切分，每块都带上表题和表头，这样每一块单独看都是完整的表格；
+        表格后面的表注跟在最后一块。HTML 表格（含合并单元格）无法安全地按行切，保持整体。
         """
         lines = table.text.splitlines()
-        if len(table.text) <= self.chunk_size or len(lines) < 3 or not lines[0].startswith("|"):
+        start = next((i for i, line in enumerate(lines) if line.startswith("|")), None)
+        if len(table.text) <= self.chunk_size or start is None or len(lines) < start + 3:
             return [table]
-        head, rows = lines[:2], lines[2:]
+        end = next((i for i in range(start, len(lines)) if not lines[i].startswith("|")), len(lines))
+        head, rows, tail = lines[:start + 2], lines[start + 2:end], lines[end:]
         budget = self.chunk_size - sum(len(h) + 1 for h in head)
         pieces: list[list[str]] = [[]]
         used = 0
@@ -91,6 +93,7 @@ class StructureChunker(Chunker):
                 used = 0
             pieces[-1].append(row)
             used += len(row) + 1
+        pieces[-1] += tail
         return [
             Element("table", "\n".join(head + piece), page=table.page, extra={**table.extra, "table_part": i + 1})
             for i, piece in enumerate(pieces)

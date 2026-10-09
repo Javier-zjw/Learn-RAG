@@ -64,6 +64,8 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **解析器接口只有一个方法**：`DocumentParser.parse(path) -> list[Element]`。每种工具（原生库、MinerU、Docling、VLM OCR）各写一个适配器，把自己的输出翻译成 `Element`，差异不外泄。
 - **选择策略按文档类型**：Office 与网页直接读结构（不做 OCR）；有文字层的 PDF 用原生解析，页面缺少文字层时自动交给 OCR；扫描件与图片用 VLM OCR；需要高精度版面时可在配置中换成 MinerU / Docling。
 - **分层落盘**：解析结果按「文件哈希 + 解析器」缓存为 JSON，改切分策略时不必重新 OCR；解析失败时按配置的备选解析器降级，单个文件失败不影响整批。
+- **表格统一表示**：所有来源的表格都经 `parsing/markdown.py` 的 `normalize_table` 处理，没有合并单元格的用 Markdown，有合并单元格的用紧凑 HTML。
+- **外部工具的输出以真实样例为准**：改适配器前先看 `samples/parsing_results/*_raw/` 里的原始输出，改完用 `export_parsed.py --replay` 在真实输出上验证。
 - **结构感知切分**：以标题为边界切分并在块前拼接标题路径；表格整体保留，超长表格按行切分并重复表头；页眉页脚在解析层丢弃；每个块记录页码与标题路径以便溯源。
 - 重型依赖（pymupdf、python-docx、python-pptx、openpyxl、MinerU、Docling）一律延迟导入，测试中用 mock 或小样例文件，不依赖 GPU 与网络。
 
