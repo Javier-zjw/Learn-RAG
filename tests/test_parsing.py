@@ -358,6 +358,20 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertIn("standard", cmd)
         self.assertEqual(len(elements), 9)
 
+    def test_mineru_office_files_skip_tier(self):
+        """Office 等格式在 MinerU 里固定走 flash，显式传 --tier 会报错，所以不能带档位参数。"""
+        def fake_run(cmd, **_):
+            self._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]), images={})
+            return SimpleNamespace(returncode=0)
+
+        for name in ("a.docx", "a.pptx", "a.xlsx"):
+            with patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run) as run:
+                MinerUParser(image_analysis=False).parse(Path(name))
+            cmd = run.call_args[0][0]
+            self.assertNotIn("--tier", cmd)
+            self.assertNotIn("--ocr-mode", cmd)
+            self.assertNotIn("--disable-image-analysis", cmd)
+
     def test_mineru_missing_command(self):
         with patch("learn_rag.parsing.external.subprocess.run", side_effect=FileNotFoundError):
             with self.assertRaisesRegex(RuntimeError, "mineru"):
@@ -760,7 +774,8 @@ class TestAssetStorage(unittest.TestCase):
                 if element.kind == "table":
                     expected = TestExternalAdapters.IMAGES["images/table.jpg"]
                 elif element.kind == "image":
-                    expected = TestExternalAdapters.IMAGES[f"images/{element.extra['mineru_type']}.jpg"]
+                    name = {"image": "pic", "chart": "chart"}[element.extra["mineru_type"]]
+                    expected = TestExternalAdapters.IMAGES[f"images/{name}.jpg"]
                 else:
                     continue
                 self.assertEqual(element.extra["sha256"], hashlib.sha256(expected).hexdigest())

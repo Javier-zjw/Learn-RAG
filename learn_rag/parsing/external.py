@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# MinerU 4.x 中可以选择质量档位（flash/basic/standard/advanced）的输入格式
+_TIERED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".jp2"}
+
 
 @registry.register("parser", "mineru")
 class MinerUParser(DocumentParser):
@@ -75,13 +78,13 @@ class MinerUParser(DocumentParser):
     def parse(self, path: Path) -> list[Element]:
         with tempfile.TemporaryDirectory() as out:
             zip_path = Path(out) / f"{path.stem}.zip"
-            cmd = [
-                self.command, "parse", str(path),
-                "-o", str(zip_path), "--format", "zip", "--tier", self.tier,
-                "--ocr-mode", self.ocr_mode,
-            ]
-            if not self.image_analysis:
-                cmd.append("--disable-image-analysis")
+            cmd = [self.command, "parse", str(path), "-o", str(zip_path), "--format", "zip"]
+            # 只有 PDF 和图片区分质量档位；Office、HTML、CSV 等固定走 flash（直接读文件结构），
+            # 对它们显式传 --tier 时 MinerU 会直接报错，所以这些参数只在可分档的格式上传
+            if path.suffix.lower() in _TIERED_SUFFIXES:
+                cmd += ["--tier", self.tier, "--ocr-mode", self.ocr_mode]
+                if not self.image_analysis:
+                    cmd.append("--disable-image-analysis")
             # 权重来源和缓存位置由解析器显式控制：换机器、换用户目录都不影响模型加载
             env = dict(os.environ)
             env["MINERU_HOME"] = str(self.models_dir.resolve())
