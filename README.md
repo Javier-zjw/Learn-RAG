@@ -66,7 +66,7 @@
 | 图片 | `vlm_ocr` | 调用任意 OpenAI 兼容的视觉模型（PaddleOCR-VL、MinerU2.5、Qwen-VL 等）转写为 Markdown |
 
 - `configs/parsing.yaml` 预置企业级路由：PDF 首选 MinerU、Word 首选 Docling，未安装或失败时自动退回内置解析器；两路解析出的图片统一存入内容寻址资产库（按 SHA-256 去重），图注进入索引，资产路径记录在块元数据 `assets` 字段中。
-- MinerU 4.x 模型权重通过 ModelScope 自动下载到项目内的 `mineru_model_weight/`（已 gitignore），解析器通过 `MINERU_HOME` 加载该目录；CPU 部署可用 `scripts/start_mineru.sh` 读取 `.mineru.env` 并启动本地 VLM 服务。
+- MinerU 4.x 模型权重通过 ModelScope 自动下载到项目内的 `mineru_model_weight/`（已 gitignore），解析器通过 `MINERU_HOME` 加载该目录；CPU 部署可用 `scripts/start_mineru.sh` 读取 `.mineru.env` 并启动本地 VLM 服务，解析器读取同一个 `.mineru.env`。
 - `FileSource` 按“文件内容哈希 + 解析器 + 参数”缓存解析结果，调整切分策略、重建索引时不会重复解析；缓存原子写入、损坏自动重建；目录扫描跳过隐藏文件、Office 锁文件和未下载完成的临时文件，可按 `max_file_size` 限制单文件大小；单个文件失败只记日志并跳过。
 - `structure` 切分器以标题为边界切分，块首拼接“文档标题 > 章节路径”；表格单独成块，超长表格按行切分并在每块重复表头；每个块记录章节路径和页码范围，便于溯源。
 
@@ -111,7 +111,7 @@
   内置套件：`chunk_size`、`channel`、`rerank`、`index`、`space`、`hnsw_build`、`hnsw_search`、`top_k`。
 - `make_parsing_samples.py`：生成 `samples/parsing/` 下的文档解析验证样例（22 个文件，覆盖 PDF、扫描件、Office 新旧格式、OpenDocument、RTF、CSV/TSV、网页、网页存档、EPUB、图片），说明见 `samples/README.md`。
 - `export_parsed.py`：把文档解析结果导出为 Markdown、结构元素 JSON 和切分块，用于检查 MinerU 或内置解析器的效果；`--mineru` 让 Word / PPT / Excel 也优先走 MinerU。
-- `start_mineru.sh`：读取 `.mineru.env`，启动本机 MinerU 的 llama.cpp VLM 服务和 MinerU 服务（已运行则跳过），详见“使用 MinerU 解析复杂 PDF”。
+- `start_mineru.sh` / `stop_mineru.sh`：读取 `.mineru.env`，启动 / 停止本机 MinerU 的 llama.cpp VLM 服务（停止时顺带清理残留的文档库服务），详见“使用 MinerU 解析复杂 PDF”。
 - `make_agentic_data.py`：生成 Agentic RAG 演示数据（带元数据的文件、SQLite 订单库、标注了 `expected_tools` 的问答集），为后续“自主决策”模式做准备。
 
 ### 7. 预置实验配置（`configs/`）
@@ -260,16 +260,27 @@ FileSource ──▶ MinerUParser
                       └─ zip 中的图片、图表、表格截图 ──▶ 内容寻址资产库（.cache/assets）
 ```
 
-解析器通过命令行调用 MinerU（命令行是它最稳定的对外接口），调用时显式设置以下环境变量，
-保证模型从项目目录加载、与运行机器的用户目录无关：
+解析器通过命令行（`mineru-kit parse`）调用 MinerU，命令行是它最稳定的对外接口。
+`mineru-kit parse` 在当前进程内直接解析，只依赖 VLM 服务，**不需要 MinerU 的文档库服务（`mineru server`）**。
 
-| 环境变量 | 取值 |
+MinerU 的运行环境统一放在项目根目录的 `.mineru.env` 里。启动脚本和解析器读取的是**同一个文件**，
+保证启动服务和解析文档用的是同一套模型目录和 VLM 地址。环境变量的优先级：
+
+1. `.mineru.env` 中的值（最高）；
+2. 当前 shell 中已经设置的同名环境变量；
+3. 解析器默认值，见下表。
+
+| 环境变量 | 解析器默认值 |
 | --- | --- |
 | `MINERU_HOME` | `options.mineru.models_dir`（默认项目内的 `mineru_model_weight/`） |
 | `MINERU_MODEL_SOURCE` | `modelscope`（权重从 ModelScope 下载） |
 | `MINERU_MODEL_SMALL_BACKEND` | `onnx` |
 | `MINERU_MODEL_VLM_ENGINE` | `llama-cpp` |
 | `MINERU_MODEL_VLM_SERVER_URL` | `options.mineru.vlm_server_url`（默认 `http://127.0.0.1:30000`） |
+
+解析时日志会打印实际生效的值，例如
+`MinerU 运行环境：已加载 /…/Learn-RAG/.mineru.env；MINERU_HOME=…；VLM 服务=http://127.0.0.1:30000`，
+看到“已加载”就说明读到了 `.mineru.env`。
 
 **第一步：安装**
 
@@ -282,26 +293,31 @@ pip install -e ".[mineru]"     # 即 mineru>=4.0,<5，提供 mineru 与 mineru-k
 **第二步：创建本机配置 `.mineru.env`（含本机绝对路径，已在 `.gitignore` 中，不提交）**
 
 ```bash
-MINERU_HOME=/绝对路径/Learn-RAG/mineru_model_weight   # 与 options.mineru.models_dir 保持一致
-MINERU_MODEL_VLM_SERVER_URL=http://127.0.0.1:30000      # 与 options.mineru.vlm_server_url 保持一致
-MINERU_VLM_HOST=127.0.0.1
-MINERU_VLM_PORT=30000
+MINERU_PYTHON_ENV=/你的/python环境                   # 安装了 MinerU 的 Python 环境（启动、停止脚本用）
+MINERU_HOME=/绝对路径/Learn-RAG/mineru_model_weight     # 模型目录
+MINERU_MODEL_VLM_SERVER_URL=http://127.0.0.1:30000     # VLM 服务地址
+MINERU_VLM_HOST=127.0.0.1                             # VLM 服务监听地址（启动脚本用）
+MINERU_VLM_PORT=30000                                 # VLM 服务端口（启动脚本用）
 ```
 
-**第三步：启动服务（CPU 部署）**
+写法与 shell 相同：支持 `export` 前缀、引号、`#` 注释和 `$VAR` / `~`。
+
+**第三步：启动和停止服务（CPU 部署）**
 
 ```bash
-# MinerU 安装在哪个 Python 环境，就用 MINERU_PYTHON_ENV 指过去（脚本默认 /opt/anaconda3/envs/langchain_env）
-MINERU_PYTHON_ENV=/path/to/python/env bash scripts/start_mineru.sh
+bash scripts/start_mineru.sh     # 启动 VLM 服务（已运行则跳过）
+bash scripts/stop_mineru.sh      # 停止 VLM 服务，并清理残留的 MinerU 文档库服务
 ```
 
-脚本依次完成：
-1. 加载 `.mineru.env`，检查 `mineru`、`mineru-kit` 命令和模型目录是否存在；
-2. 访问 `<VLM 服务地址>/v1/models` 检查 VLM 服务。未运行时用 `mineru-kit vlm-server --engine llama-cpp` 在后台启动，最多等待 120 秒；
-3. 执行 `mineru server start` 启动 MinerU 服务，并打印 `mineru server status --json`。
+启动脚本依次完成：
+1. 加载 `.mineru.env`，检查 `mineru-kit` 命令和模型目录是否存在（`MINERU_PYTHON_ENV` 没写在 `.mineru.env` 里时，默认 `/opt/anaconda3/envs/langchain_env`）；
+2. 访问 `<VLM 服务地址>/v1/models` 检查 VLM 服务。未运行时用 `mineru-kit vlm-server --engine llama-cpp` 在后台启动，最多等待 120 秒。
 
 VLM 服务的日志写在 `$MINERU_HOME/logs/vlm-server.log`，进程号写在 `$MINERU_HOME/vlm-server.pid`。
 VLM 模型单独作为服务运行，避免每次解析都在进程内重新加载大模型。
+
+停止脚本会先用 `mineru server stop` 正常停止文档库服务；如果该服务卡住不响应
+（报错 `MinerU home [...] is currently owned by another doclib server process`），会找到 `python -m mineru.doclib.app` 进程直接结束。
 
 **第四步：检查解析效果**
 
@@ -354,6 +370,7 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
 | `command` | `mineru-kit` | MinerU 命令行名称或绝对路径 |
 | `timeout` | `1800` | 单个文件的解析超时（秒） |
 | `raw_dir` | 不保存 | 另存 MinerU 原始结果 zip 的目录，用于排查 |
+| `env_file` | `.mineru.env` | MinerU 运行环境文件，相对路径按项目根目录解析；设为 `null` 时不读取 |
 
 **MinerU 输出到 `Element` 的映射**
 

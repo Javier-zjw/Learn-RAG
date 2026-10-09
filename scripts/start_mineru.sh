@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 启动本机 MinerU 4.x CPU 服务；环境变量只放在 .mineru.env，不读取项目 .env。
+# 启动本机 MinerU 4.x 的 VLM 服务（llama.cpp）。
+# 环境变量只放在 .mineru.env，不读取项目 .env；解析器（learn_rag/parsing/external.py）读取的是同一个文件。
+# 本项目通过 mineru-kit parse 解析文档，不需要 MinerU 的文档库服务（mineru server），所以这里不启动它。
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT/.mineru.env"
-PYTHON_ENV="${MINERU_PYTHON_ENV:-/opt/anaconda3/envs/langchain_env}"
-MINERU_BIN="$PYTHON_ENV/bin/mineru"
-MINERU_KIT="$PYTHON_ENV/bin/mineru-kit"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "缺少 ${ENV_FILE}：请先创建本机 MinerU 环境文件。" >&2
@@ -16,7 +15,11 @@ set -a
 source "$ENV_FILE"
 set +a
 
-if [[ ! -x "$MINERU_BIN" || ! -x "$MINERU_KIT" ]]; then
+# MINERU_PYTHON_ENV 建议写在 .mineru.env 里；文件里没写时，也可以在命令行前面临时指定
+PYTHON_ENV="${MINERU_PYTHON_ENV:-/opt/anaconda3/envs/langchain_env}"
+MINERU_KIT="$PYTHON_ENV/bin/mineru-kit"
+
+if [[ ! -x "$MINERU_KIT" ]]; then
   echo "MinerU 未安装在 ${PYTHON_ENV}，请先执行：${PYTHON_ENV}/bin/python3.12 -m pip install 'mineru>=4.0,<5'" >&2
   exit 1
 fi
@@ -61,5 +64,4 @@ else
   echo "MinerU VLM 服务已就绪：$MINERU_MODEL_VLM_SERVER_URL"
 fi
 
-"$MINERU_BIN" server start
-"$MINERU_BIN" server status --json
+echo "MinerU 已就绪：MINERU_HOME=${MINERU_HOME}"

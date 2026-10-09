@@ -13,7 +13,7 @@
 
 ```bash
 git pull
-MINERU_PYTHON_ENV=/你的/python环境 bash scripts/start_mineru.sh      # 启动 MinerU 服务
+bash scripts/start_mineru.sh          # 启动 VLM 服务；.mineru.env 里需要写好 MINERU_PYTHON_ENV 等配置
 
 python scripts/export_parsed.py samples/parsing --mineru --no-cache \
     --raw samples/parsing_results/mineru_raw --out samples/parsing_results/mineru
@@ -25,6 +25,7 @@ git push
 
 - `--mineru`：所有 MinerU 支持的格式都优先交给 MinerU，失败时退回内置解析器。
 - `--no-cache`：强制重新解析，不读旧缓存。
+- 解析器会读取项目根目录的 `.mineru.env`。`export.log` 开头的“MinerU 运行环境：已加载 …/.mineru.env”说明读到了这个文件。
 - 结果目录里的 `summary.md` 列出每个文件实际用的解析器和元素数量；`export.log` 记录了所有失败和降级原因。
   如果某个文件的解析器不是 `mineru`，说明 MinerU 失败了，原因在 `export.log` 里。
 
