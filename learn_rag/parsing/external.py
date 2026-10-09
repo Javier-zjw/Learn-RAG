@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ from ..core.interfaces import DocumentParser
 from ..core.registry import registry
 from ..core.types import Element
 from .assets import mime_for, save_asset
+from .markdown import normalize_table
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +56,12 @@ class MinerUParser(DocumentParser):
             image_analysis: bool = True,
             raw_dir: str | None = None,
             env_file: str | None = ".mineru.env",
+            replay_dir: str | None = None,
     ) -> None:
         """
         raw_dir:  设置后把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于排查解析问题
+        replay_dir: 设置后优先读取该目录里已保存的结果 zip（即 raw_dir 存下的文件），不再调用 MinerU。
+                  修改适配器后用它在已有的 MinerU 输出上快速验证，不必重新跑一遍耗时的解析
         env_file: MinerU 运行环境文件，与 scripts/start_mineru.sh 读的是同一份，保证两边的模型目录、
                   VLM 服务地址一致；相对路径按项目根解析，设为 None 时不读取
         """
@@ -69,6 +74,7 @@ class MinerUParser(DocumentParser):
         self.ocr_mode = ocr_mode
         self.image_analysis = image_analysis
         self.raw_dir = Path(raw_dir) if raw_dir else None
+        self.replay_dir = Path(replay_dir) if replay_dir else None
         # 相对资产目录按项目根解析，避免从不同目录启动 CLI 时把图片写到别处。
         if assets_dir is None:
             self.assets_dir = None
@@ -113,6 +119,9 @@ class MinerUParser(DocumentParser):
         return env
 
     def parse(self, path: Path) -> list[Element]:
+        recorded = self.replay_dir / f"{path.name}.zip" if self.replay_dir else None
+        if recorded is not None and recorded.is_file():
+            return self._read_result(recorded)
         with tempfile.TemporaryDirectory() as out:
             zip_path = Path(out) / f"{path.stem}.zip"
             cmd = [self.command, "parse", str(path), "-o", str(zip_path), "--format", "zip"]
@@ -136,16 +145,19 @@ class MinerUParser(DocumentParser):
             if self.raw_dir is not None:
                 self.raw_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(zip_path, self.raw_dir / f"{path.name}.zip")   # 用完整文件名，避免同名不同格式互相覆盖
-            try:
-                with ZipFile(zip_path) as archive:
-                    if "middle_json.json" not in archive.namelist():
-                        raise RuntimeError("MinerU 结果 zip 中缺少 middle_json.json")
-                    middle = json.loads(archive.read("middle_json.json"))
-                    elements = mineru_middle_to_elements(middle)
-                    _persist_mineru_assets(elements, archive, self.assets_dir)
-                    return elements
-            except (OSError, ValueError, KeyError) as exc:
-                raise RuntimeError(f"读取 MinerU 结果 zip 失败：{exc}") from None
+            return self._read_result(zip_path)
+
+    def _read_result(self, zip_path: Path) -> list[Element]:
+        try:
+            with ZipFile(zip_path) as archive:
+                if "middle_json.json" not in archive.namelist():
+                    raise RuntimeError("MinerU 结果 zip 中缺少 middle_json.json")
+                middle = json.loads(archive.read("middle_json.json"))
+                elements = mineru_middle_to_elements(middle)
+                _persist_mineru_assets(elements, archive, self.assets_dir)
+                return elements
+        except (OSError, ValueError, KeyError) as exc:
+            raise RuntimeError(f"读取 MinerU 结果 zip 失败：{exc}") from None
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -193,143 +205,195 @@ def _safe_zip_member(name: str) -> bool:
     return bool(name) and not name.startswith("/") and ".." not in name.split("/")
 
 
-# MinerU middle JSON 中与正文无关的页面临近信息；正文脚注仍可能有业务价值，单独保留。
-_MINERU_NOISE = {"header", "footer", "page_number", "page_footnote", "aside_text", "discarded"}
+# 与正文无关的页面元素，直接丢弃。page_footnote 不在其中：PDF 的页脚注释和 PPT 的演讲者备注
+# 在 MinerU 里都是 page_footnote，属于正文内容，保留为带 footnote 标记的段落。
+_MINERU_NOISE = {"header", "footer", "page_number", "aside_text", "discarded"}
+# image_body 的内容是图片描述；PPT 等文档里它有时只是图片的原始文件名（如 "image.png"），没有信息量
+_BARE_FILENAME = re.compile(r"^[\w\-. ]+\.(png|jpe?g|gif|bmp|svg|emf|wmf|tiff?|webp)$", re.I)
+_SENTENCE_END = tuple("。！？；：.!?;:")
+_SOFT_BREAK = tuple("，、,")
+_COLUMN_TOLERANCE = 0.03     # bbox 是 [0,1] 归一化坐标；左边界相差不到 3% 视为同一栏
+_CJK = re.compile(r"[　-〿一-鿿＀-￯]")
 
 
 def mineru_middle_to_elements(middle: dict[str, Any]) -> list[Element]:
     """把 MinerU 4.x 的 docvortex.middle 协议转换成项目统一 Element。"""
     elements: list[Element] = []
-    last_by_type: dict[str | None, int] = {}
     for page in middle.get("pages", []):
         page_no = page.get("page_idx", 0) + 1 if "page_idx" in page else None
         for block in page.get("blocks", []):
-            element = _mineru_block_to_element(block, page_no)
-            if element is None:
-                continue
-            _merge_continued_element(elements, element, last_by_type)
-    return elements
+            converted = _mineru_block_to_elements(block, page_no)
+            if converted and block.get("continues_prev") and block.get("type") == "table":
+                if elements and elements[-1].kind == "table":
+                    _append_table_rows(elements[-1], converted.pop(0))
+            elements.extend(converted)
+    return _join_wrapped_text(elements)
 
 
-def _mineru_block_to_element(block: dict[str, Any], page: int | None) -> Element | None:
+def _mineru_block_to_elements(block: dict[str, Any], page: int | None) -> list[Element]:
     kind = block.get("type", "text")
     if kind in _MINERU_NOISE:
-        return None
+        return []
 
     common = {"page": page, "bbox": block.get("bbox")}
-    if kind == "doc_title":
-        return _heading(block, 1, common)
-    if kind == "paragraph_title":
-        return _heading(block, int(block.get("level") or 2), common)
     if kind in {"image", "chart"}:
         return _mineru_visual(block, kind, common)
     if kind == "table":
-        element = _mineru_table(block, common)
-        if element is not None:
-            element.extra["mineru_type"] = "table"
-            if block.get("continues_prev"):
-                element.extra["continues_prev"] = True
-        return element
+        return _mineru_table(block, common)
     if kind == "equation":
         text = str(block.get("content", "")).strip()
-        if text:
-            return Element("formula", text, **common)
-        return None
+        return [Element("formula", text, **common)] if text else []
     if kind == "code":
-        body = _body_text(block, {"code_body", "algorithm_body"})
-        captions = _annotations(block, {"code_caption"}, "caption")
-        footnotes = _annotations(block, {"code_footnote"}, "footnote")
-        text = "\n".join(part for part in [*captions, body, *footnotes] if part)
-        if text:
-            return Element("code", text, **common)
-        return None
-    if kind == "list":
-        items = [_inline_text(child) for child in block.get("content", [])]
-        text = "\n".join(item for item in items if item)
-        if text:
-            return Element("text", text, extra={"list": True, "mineru_type": "list"}, **common)
-        return None
+        body = _child(block, {"code_body", "algorithm_body"})
+        parts = [*_texts(block, {"code_caption"}), str(body.get("content", "")).strip() if body else "",
+                 *_texts(block, {"code_footnote"})]
+        text = "\n".join(p for p in parts if p)
+        return [Element("code", text, **common)] if text else []
 
-    text = _inline_text(block)
-    if text:
-        extra = {"mineru_type": kind}
-        if block.get("continues_prev"):
-            extra["continues_prev"] = True
-        return Element("text", text, extra=extra, **common)
-    return None
-
-
-def _heading(block: dict[str, Any], level: int, common: dict[str, Any]) -> Element | None:
-    text = _inline_text(block)
+    # index 是目录，结构和列表一样
+    text = "\n".join(_list_lines(block)) if kind in {"list", "index"} else _inline_text(block)
     if not text:
-        return None
-    return Element("heading", text, level=max(1, min(level, 6)), **common)
+        return []
+    if kind == "doc_title":
+        return [Element("heading", text, level=1, **common)]
+    if kind == "paragraph_title":
+        return [Element("heading", text, level=max(1, min(int(block.get("level") or 2), 6)), **common)]
+    extra: dict[str, Any] = {"mineru_type": kind}
+    if kind == "page_footnote":
+        extra["footnote"] = True
+    return [Element("text", text, extra=extra, **common)]
 
 
-def _mineru_visual(block: dict[str, Any], mineru_type: str, common: dict[str, Any]) -> Element:
-    body = _child(block, {"image_body", "chart_body"})
-    captions = _annotations(block, {"image_caption", "chart_caption"}, "caption")
-    footnotes = _annotations(block, {"image_footnote", "chart_footnote"}, "footnote")
-    text = "\n".join(part for part in [*captions, *footnotes] if part) or ("[图片]" if mineru_type == "image" else "[图表]")
+def _mineru_visual(block: dict[str, Any], mineru_type: str, common: dict[str, Any]) -> list[Element]:
+    """
+    图片和图表：
+      - 原生图表（PPT / Excel 里的图表）的 chart_body 是图表数据转成的表格，作为表格元素输出，数据能被检索到；
+      - 其余情况输出图片元素，文字是图题加图片描述，没有任何文字时用 [图片] / [图表] 占位，保证原图仍能被引用；
+      - 图注（footnote）单独输出为段落：MinerU 有时会把紧跟在图后面的正文段落识别成图注。
+    """
+    body = _child(block, {"image_body", "chart_body"}) or {}
+    content = str(body.get("content") or "").strip()
+    captions = _texts(block, {"image_caption", "chart_caption"})
     extra: dict[str, Any] = {"mineru_type": mineru_type}
-    image_path = body.get("image_path") if body else None
-    if image_path:
-        extra["image_path"] = image_path
-    return Element("image", text, extra=extra, **common)
-
-
-def _mineru_table(block: dict[str, Any], common: dict[str, Any]) -> Element | None:
-    body = _child(block, {"table_body"})
-    body_text = str(body.get("content", "")) if body else ""
-    captions = _annotations(block, {"table_caption"}, "caption")
-    footnotes = _annotations(block, {"table_footnote"}, "footnote")
-    text = "\n".join(part for part in [*captions, body_text, *footnotes] if part)
-    if not text:
-        return None
-    extra: dict[str, Any] = {}
-    if body and body.get("image_path"):
+    if body.get("image_path"):
         extra["image_path"] = body["image_path"]
-    return Element("table", text, extra=extra, **common)
+
+    if mineru_type == "chart" and content:
+        element = Element("table", "\n".join([*captions, normalize_table(content)]), extra=extra, **common)
+    else:
+        description = "" if _BARE_FILENAME.match(content) else content
+        text = "\n".join(p for p in [*captions, description] if p) or ("[图片]" if mineru_type == "image" else "[图表]")
+        element = Element("image", text, extra=extra, **common)
+
+    footnotes = [
+        Element("text", text, page=common["page"], bbox=child.get("bbox"), extra={"mineru_type": child["type"]})
+        for child in _children(block, {"image_footnote", "chart_footnote"})
+        if (text := _inline_text(child))
+    ]
+    return [element, *footnotes]
 
 
-def _merge_continued_element(elements: list[Element], element: Element, last_by_type: dict[str | None, int]) -> None:
-    """合并 MinerU 标记的跨页续块，避免一个段落被切成两个检索片段。"""
-    continued = element.extra.pop("continues_prev", None)
-    index = last_by_type.get(element.extra.get("mineru_type")) if continued else None
-    if index is not None and 0 <= index < len(elements):
-        previous = elements[index]
-        # 只合并同类且页码不回退的块；版面模型可能把图片插在两段文字之间，不能只看列表末尾。
-        if previous.kind == element.kind and previous.page and element.page and element.page >= previous.page:
-            separator = "" if element.kind == "text" else "\n"
-            previous.text += separator + element.text
-            if element.page > previous.page:
-                previous.extra["page_end"] = element.page
-            return
+def _mineru_table(block: dict[str, Any], common: dict[str, Any]) -> list[Element]:
+    """表题、表格、表注拼在一起：表注通常是"注：数据未经审计"这类说明，和表格分开就失去了上下文。"""
+    body = _child(block, {"table_body"}) or {}
+    parts = [*_texts(block, {"table_caption"}), normalize_table(str(body.get("content") or "")),
+             *_texts(block, {"table_footnote"})]
+    text = "\n".join(p for p in parts if p)
+    if not text:
+        return []
+    extra: dict[str, Any] = {"mineru_type": "table"}
+    if body.get("image_path"):
+        extra["image_path"] = body["image_path"]
+    return [Element("table", text, extra=extra, **common)]
 
-    elements.append(element)
-    last_by_type[element.extra.get("mineru_type")] = len(elements) - 1
+
+def _append_table_rows(table: Element, continued: Element) -> None:
+    """
+    跨页续表：Markdown 表格只追加数据行，其他情况直接拼接。
+    续表转 Markdown 时第一行会被当成表头、后面跟一行分隔线：分隔线总是去掉；
+    第一行只有和原表头相同（续页重复了表头）时才去掉，否则它是数据行，要保留。
+    """
+    lines = continued.text.splitlines()
+    header = next((line for line in table.text.splitlines() if line.startswith("|")), None)
+    if header and len(lines) >= 2 and lines[0].startswith("|") and set(lines[1]) <= set("|- "):
+        lines = ([] if lines[0] == header else [lines[0]]) + lines[2:]
+    table.text += "\n" + "\n".join(lines)
+    if continued.page and table.page and continued.page > table.page:
+        table.extra["page_end"] = continued.page
+
+
+def _join_wrapped_text(elements: list[Element]) -> list[Element]:
+    """
+    把版面上被折行拆开的段落接回去（同页的上下两块，或上一页末尾和下一页开头）。
+
+    MinerU 按版面块输出，同一段话常被拆成两块。它的 continues_prev 标记既会漏标也会误标
+    （样例里真正跨页的句子没有标，扫描件里印章反而和下一页的条款标成了一段），
+    所以正文只看版面几何，两个条件同时满足才合并：
+      1. 上一块不以句末标点结尾；
+      2. 上一块以逗号、顿号结尾，或者它写满了所在栏的宽度 —— 说明是排版折行，而不是一段话结束了。
+    只处理带坐标的正文块（PDF、图片）；Office 等流式文档本来就按段落输出。
+    """
+    out: list[Element] = []
+    for element in elements:
+        target = next((e for e in reversed(out) if not e.extra.get("footnote")), None)
+        if target is not None and _continues(target, element, elements):
+            separator = "" if _CJK.match(target.text[-1]) or _CJK.match(element.text[0]) else " "
+            target.text += separator + element.text
+            if element.page and target.page and element.page > target.page:
+                target.extra["page_end"] = element.page
+            continue
+        out.append(element)
+    return out
+
+
+def _continues(prev: Element, cur: Element, elements: list[Element]) -> bool:
+    if not (_is_body_text(prev) and _is_body_text(cur)):
+        return False
+    same_page_below = cur.page == prev.page and cur.bbox[1] >= prev.bbox[1]
+    if not (same_page_below or cur.page == prev.page + 1):
+        return False
+    text = prev.text.rstrip()
+    if text.endswith(_SENTENCE_END):
+        return False
+    return text.endswith(_SOFT_BREAK) or _fills_column(prev, elements)
+
+
+def _is_body_text(element: Element) -> bool:
+    return (element.kind == "text" and bool(element.bbox) and element.page is not None
+            and not element.extra.get("footnote") and element.extra.get("mineru_type") not in {"list", "index"})
+
+
+def _fills_column(element: Element, elements: list[Element]) -> bool:
+    """所在栏 = 同一页上左边界相近的正文块；至少两块才算一栏，右边界达到栏宽才算写满。"""
+    peers = [e for e in elements if _is_body_text(e) and e.page == element.page
+             and abs(e.bbox[0] - element.bbox[0]) <= _COLUMN_TOLERANCE]
+    return len(peers) >= 2 and element.bbox[2] >= max(e.bbox[2] for e in peers) - _COLUMN_TOLERANCE
+
+
+def _list_lines(block: dict[str, Any], depth: int = 0) -> list[str]:
+    """列表展开成每项一行，嵌套的子列表每深一层缩进两个空格。"""
+    lines: list[str] = []
+    for child in block.get("content", []):
+        if not isinstance(child, dict):
+            continue
+        if child.get("type") in {"list", "index"}:
+            lines += _list_lines(child, depth + 1)
+        elif text := _inline_text(child):
+            lines.append("  " * depth + text)
+    return lines
 
 
 def _child(block: dict[str, Any], types: set[str]) -> dict[str, Any] | None:
-    for child in block.get("content", []):
-        if isinstance(child, dict) and child.get("type") in types:
-            return child
-    return None
+    children = _children(block, types)
+    return children[0] if children else None
 
 
-def _body_text(block: dict[str, Any], types: set[str]) -> str:
-    child = _child(block, types)
-    return str(child.get("content", "")).strip() if child else ""
+def _children(block: dict[str, Any], types: set[str]) -> list[dict[str, Any]]:
+    return [c for c in block.get("content", []) if isinstance(c, dict) and c.get("type") in types]
 
 
-def _annotations(block: dict[str, Any], types: set[str], suffix: str) -> list[str]:
-    result: list[str] = []
-    for child in block.get("content", []):
-        if isinstance(child, dict) and child.get("type") in types and str(child.get("type", "")).endswith(suffix):
-            text = _inline_text(child)
-            if text:
-                result.append(text)
-    return result
+def _texts(block: dict[str, Any], types: set[str]) -> list[str]:
+    return [text for child in _children(block, types) if (text := _inline_text(child))]
 
 
 def _inline_text(block: dict[str, Any]) -> str:

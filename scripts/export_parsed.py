@@ -15,7 +15,10 @@
     python scripts/export_parsed.py samples/parsing --mineru --no-cache \\
         --raw samples/parsing_results/mineru_raw --out samples/parsing_results/mineru
 
---raw 会把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于核对适配器有没有漏掉信息。
+--raw 会把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于核对适配器有没有漏掉信息；
+--replay 读取这些已保存的 zip 而不重新运行 MinerU，修改适配器后用它在几秒内重新生成结果：
+    python scripts/export_parsed.py samples/parsing --mineru --no-cache \\
+        --replay samples/parsing_results/mineru_raw --out samples/parsing_results/mineru
 解析结果默认有缓存（.cache/parsed/），--no-cache 强制重新解析。
 """
 
@@ -62,6 +65,7 @@ def main() -> None:
     ap.add_argument("--mineru", action="store_true", help="所有 MinerU 支持的格式都优先使用 MinerU 解析")
     ap.add_argument("--no-cache", action="store_true", help="不读也不写解析缓存，强制重新解析")
     ap.add_argument("--raw", help="另存 MinerU 原始结果 zip 的目录")
+    ap.add_argument("--replay", help="直接读取该目录里已保存的 MinerU 结果 zip，不重新运行 MinerU（修改适配器后用来快速验证）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -76,9 +80,12 @@ def main() -> None:
         parsing["parsers"] = {**(parsing.get("parsers") or {}), **_MINERU_FIRST}
     if args.no_cache:
         parsing["cache_dir"] = None
-    if args.raw:
+    if args.raw or args.replay:
         options = {k: dict(v) for k, v in (parsing.get("options") or {}).items()}
-        options.setdefault("mineru", {})["raw_dir"] = str(Path(args.raw).resolve())
+        if args.raw:
+            options.setdefault("mineru", {})["raw_dir"] = str(Path(args.raw).resolve())
+        if args.replay:
+            options.setdefault("mineru", {})["replay_dir"] = str(Path(args.replay).resolve())
         parsing["options"] = options
     chunker = registry.build("chunker", cfg["chunker"])
 
@@ -122,7 +129,8 @@ def _write_summary(path: Path, docs: Path, rows: list[dict], args: argparse.Name
     lines = [
         "# 解析结果汇总",
         "",
-        f"- 输入：`{docs}`　参数：mineru={args.mineru} no_cache={args.no_cache} raw={args.raw or '-'}",
+        f"- 输入：`{docs}`　参数：mineru={args.mineru} no_cache={args.no_cache} raw={args.raw or '-'} "
+        f"replay={args.replay or '-'}",
         "",
         "| 文件 | 解析器 | 耗时(秒) | " + " | ".join(kinds) + " | 块数 |",
         "| --- | --- | --- | " + " | ".join("---" for _ in kinds) + " | --- |",

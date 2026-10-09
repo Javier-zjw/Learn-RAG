@@ -51,6 +51,23 @@ class TestMarkdown(unittest.TestCase):
         md = table_to_markdown([["名称", "说明"], ["a|b", "多\n行"], ["c"], ["", None]])
         self.assertEqual(md.splitlines(), ["| 名称 | 说明 |", "| --- | --- |", "| a\\|b | 多 行 |", "| c |  |"])
 
+    def test_normalize_table(self):
+        from learn_rag.parsing.markdown import normalize_table
+
+        # 没有合并单元格：带缩进和 <p> 的 HTML 转成 Markdown，日期去掉零点时间，实体和 <br> 正确处理
+        pretty = ("<table>\n  <tr>\n    <th><p>订单</p></th>\n    <th><p>日期</p></th>\n  </tr>\n"
+                  "  <tr>\n    <td><p>A|1</p></td>\n    <td><p>2025-10-08 00:00:00</p></td>\n  </tr>\n"
+                  "  <tr>\n    <td>含&quot;引号&quot;</td>\n    <td>第一行<br>第二行</td>\n  </tr>\n</table>")
+        self.assertEqual(normalize_table(pretty).splitlines(),
+                         ["| 订单 | 日期 |", "| --- | --- |", "| A\\|1 | 2025-10-08 |", '| 含"引号" | 第一行 第二行 |'])
+        # 有合并单元格：保留 HTML，但只留结构
+        merged = '<table border="1">\n <tr><th rowspan="2"><strong>版本</strong></th><th colspan="2">价格</th></tr>\n' \
+                 ' <tr><td>月费</td><td>年费 &amp; 折扣</td></tr></table>'
+        self.assertEqual(normalize_table(merged),
+                         '<table><tr><td rowspan="2">版本</td><td colspan="2">价格</td></tr>'
+                         '<tr><td>月费</td><td>年费 &amp; 折扣</td></tr></table>')
+        self.assertEqual(normalize_table("| a |\n| --- |"), "| a |\n| --- |")
+
     def test_document_from_elements_renders_markdown(self):
         doc = Document.from_elements("d", [Element("heading", "标题", level=2), Element("text", "正文")])
         self.assertEqual(doc.text, "## 标题\n\n正文")
@@ -286,7 +303,8 @@ class TestExternalAdapters(unittest.TestCase):
                      "content": [{"type": "text", "content": "企业手册"}]},
                     {"type": "paragraph_title", "level": 2,
                      "content": [{"type": "text", "content": "第一章 总则"}]},
-                    {"type": "text", "content": [{"type": "text", "content": "正文开"}]},
+                    {"type": "text", "bbox": [0.1, 0.30, 0.9, 0.32],
+                     "content": [{"type": "text", "content": "正文开头，"}]},
                     {"type": "table", "content": [
                         {"type": "table_caption", "content": [{"type": "text", "content": "表1 价格"}]},
                         {"type": "table_body", "image_path": "images/table.jpg",
@@ -313,8 +331,8 @@ class TestExternalAdapters(unittest.TestCase):
             {
                 "page_idx": 1,
                 "blocks": [
-                    {"type": "text", "continues_prev": True,
-                     "content": [{"type": "text", "content": "始并延续。"}]},
+                    {"type": "text", "bbox": [0.1, 0.05, 0.6, 0.07],
+                     "content": [{"type": "text", "content": "接着延续。"}]},
                 ],
             },
         ],
@@ -334,16 +352,19 @@ class TestExternalAdapters(unittest.TestCase):
 
     def test_mineru_middle_blocks(self):
         elements = mineru_middle_to_elements(self.MIDDLE)
-        self.assertEqual(_kinds(elements), ["heading", "heading", "text", "table", "image", "image", "formula", "code", "text"])
+        self.assertEqual(_kinds(elements),
+                         ["heading", "heading", "text", "table", "image", "image", "formula", "code", "text", "text"])
         self.assertEqual((elements[0].level, elements[0].page, elements[0].bbox), (1, 1, [0.1, 0.1, 0.8, 0.2]))
         self.assertEqual(elements[1].level, 2)
-        self.assertEqual((elements[2].text, elements[2].page, elements[2].extra["page_end"]), ("正文开始并延续。", 1, 2))
-        self.assertTrue(elements[3].text.startswith("表1 价格\n<table>"))
+        self.assertEqual((elements[2].text, elements[2].page), ("正文开头，", 1))
+        self.assertEqual(elements[3].text, "表1 价格\n| A |\n| --- |")          # 没有合并单元格的 HTML 表格转成 Markdown
         self.assertEqual((elements[4].text, elements[4].extra["mineru_type"]), ("图1 架构", "image"))
         self.assertEqual((elements[5].text, elements[5].extra["mineru_type"]), ("[图表]", "chart"))
         self.assertEqual(elements[6].text, "E=mc^2")
         self.assertEqual(elements[7].text, "print(1)")
         self.assertEqual(elements[8].text, "要点一\n要点二")
+        # 第 1 页最后是列表，不是"正文开头，"，所以第 2 页的文字不能接到它后面
+        self.assertEqual((elements[9].text, elements[9].page), ("接着延续。", 2))
 
     def test_mineru_runs_cli_and_reads_zip(self):
         def fake_run(cmd, **_):
@@ -356,7 +377,7 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertEqual(cmd[:3], ["mineru-kit", "parse", "a.pdf"])
         self.assertIn("zip", cmd)
         self.assertIn("standard", cmd)
-        self.assertEqual(len(elements), 9)
+        self.assertEqual(len(elements), 10)
 
     def test_mineru_reads_env_file(self):
         """.mineru.env 与启动脚本共用：文件里的值优先于 shell 环境变量和解析器默认值。"""
@@ -390,6 +411,17 @@ class TestExternalAdapters(unittest.TestCase):
             MinerUParser(raw_dir=tmp).parse(Path("a.pdf"))
             with ZipFile(Path(tmp) / "a.pdf.zip") as archive:
                 self.assertIn("middle_json.json", archive.namelist())
+
+    def test_mineru_replays_saved_result(self):
+        """replay_dir 里有保存的结果时直接读取，不调用 MinerU；没有时照常调用。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_mineru_zip(Path(tmp) / "a.pdf.zip", images={})
+            with patch("learn_rag.parsing.external.subprocess.run", side_effect=AssertionError("不应调用 MinerU")):
+                elements = MinerUParser(replay_dir=tmp).parse(Path("a.pdf"))
+            self.assertEqual(elements[0].text, "企业手册")
+            with patch("learn_rag.parsing.external.subprocess.run", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(RuntimeError, "mineru"):
+                    MinerUParser(replay_dir=tmp).parse(Path("other.pdf"))
 
     def test_mineru_office_files_skip_tier(self):
         """Office 等格式在 MinerU 里固定走 flash，显式传 --tier 会报错，所以不能带档位参数。"""
@@ -468,6 +500,125 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertEqual([e.level for e in elements[:2]], [1, 2])
         self.assertEqual(elements[3].text, "表1\n| a |\n| --- |")
         self.assertEqual((elements[5].page, elements[5].bbox), (2, [0, 1, 2, 3]))
+
+
+def _t(text: str, bbox: list[float] | None = None, kind: str = "text", **extra) -> dict:
+    """构造一个 MinerU 文字块（内容是 InlineSpan 列表，和真实输出一致）。"""
+    block = {"type": kind, "content": [{"type": "text", "content": text}], **extra}
+    if bbox is not None:
+        block["bbox"] = bbox
+    return block
+
+
+def _middle(*pages: list[dict]) -> dict:
+    return {"schema": "docvortex.middle", "pages": [{"page_idx": i, "blocks": list(b)} for i, b in enumerate(pages)]}
+
+
+class TestMinerUConversion(unittest.TestCase):
+    """按 samples/parsing_results/mineru_raw 里真实 MinerU 4.x 输出的形态构造的用例。"""
+
+    def test_footnotes_and_speaker_notes_are_kept(self):
+        """PDF 的页脚注释和 PPT 的演讲者备注在 MinerU 里都是 page_footnote，属于正文内容。"""
+        elements = mineru_middle_to_elements(_middle(
+            [_t("正文。", [0.1, 0.1, 0.9, 0.12]), _t("¹ 客户留存率 = 年末客户数 / 年初客户数。", [0.1, 0.9, 0.6, 0.92], "page_footnote"),
+             _t("第 1 页", [0.45, 0.95, 0.55, 0.96], "page_number")],
+            [_t("讲解要点：先说结论。", kind="page_footnote")],
+        ))
+        self.assertEqual([e.text for e in elements], ["正文。", "¹ 客户留存率 = 年末客户数 / 年初客户数。", "讲解要点：先说结论。"])
+        self.assertTrue(all(e.extra.get("footnote") for e in elements[1:]))
+
+    def test_native_chart_becomes_data_table(self):
+        """PPT / Excel 的原生图表：chart_body 是图表数据转成的 HTML 表格，要作为表格保留下来。"""
+        chart = {"type": "chart", "content": [
+            {"type": "chart_caption", "content": [{"type": "text", "content": "各区域季度营收"}]},
+            {"type": "chart_body", "content": "<table>\n  <tr>\n    <th><p>区域</p></th>\n    <th><p>Q1</p></th>\n  </tr>\n"
+                                              "  <tr>\n    <td><p>华东</p></td>\n    <td><p>320</p></td>\n  </tr>\n</table>"},
+        ]}
+        empty_chart = {"type": "chart", "content": [{"type": "chart_body", "content": "", "image_path": "images/c.jpg"}]}
+        elements = mineru_middle_to_elements(_middle([chart, empty_chart]))
+        self.assertEqual(_kinds(elements), ["table", "image"])
+        self.assertEqual(elements[0].text, "各区域季度营收\n| 区域 | Q1 |\n| --- | --- |\n| 华东 | 320 |")
+        self.assertEqual((elements[1].text, elements[1].extra["image_path"]), ("[图表]", "images/c.jpg"))
+
+    def test_image_description_but_not_file_name(self):
+        def image(content: str) -> dict:
+            return {"type": "image", "content": [{"type": "image_body", "content": content, "image_path": "images/i.png"}]}
+
+        elements = mineru_middle_to_elements(_middle([image("image.png"), image("一张展示四个审批环节的流程图")]))
+        self.assertEqual([e.text for e in elements], ["[图片]", "一张展示四个审批环节的流程图"])
+
+    def test_visual_footnote_becomes_paragraph_and_joins_next_line(self):
+        """MinerU 会把图后面的正文段落识别成图注；拆成独立段落后，还要和下一行接起来。"""
+        chart = {"type": "chart", "bbox": [0.25, 0.5, 0.75, 0.7], "content": [
+            {"type": "chart_body", "content": "", "bbox": [0.25, 0.5, 0.75, 0.7]},
+            {"type": "chart_caption", "bbox": [0.4, 0.72, 0.6, 0.74], "content": [{"type": "text", "content": "图 1 营收"}]},
+            {"type": "chart_footnote", "bbox": [0.08, 0.75, 0.91, 0.77],
+             "content": [{"type": "text", "content": "从图 1 可以看出，西南区全年增速达到"}]},
+        ]}
+        elements = mineru_middle_to_elements(_middle([
+            _t("上文。", [0.08, 0.1, 0.91, 0.12]), chart, _t("53.3%，增长最快。", [0.08, 0.78, 0.6, 0.8]),
+        ]))
+        self.assertEqual(_kinds(elements), ["text", "image", "text"])
+        self.assertEqual(elements[1].text, "图 1 营收")
+        self.assertEqual(elements[2].text, "从图 1 可以看出，西南区全年增速达到53.3%，增长最快。")
+
+    def test_nested_list_items_on_separate_lines(self):
+        nested = {"type": "list", "content": [
+            _t("- 全年营收 4,860 万元"),
+            {"type": "list", "content": [_t("- 华东区环比增长 17.1%"), _t("- 西南区增速 53.3%")]},
+            _t("- 回款周期变长"),
+        ]}
+        elements = mineru_middle_to_elements(_middle([nested]))
+        self.assertEqual(elements[0].text, "- 全年营收 4,860 万元\n  - 华东区环比增长 17.1%\n  - 西南区增速 53.3%\n- 回款周期变长")
+
+    def test_wrapped_lines_are_joined_by_geometry(self):
+        elements = mineru_middle_to_elements(_middle(
+            [
+                _t("甲方：星河科技有限公司", [0.08, 0.10, 0.34, 0.12]),           # 短行、没写满：不是折行
+                _t("乙方：云帆数据服务有限公司", [0.08, 0.13, 0.39, 0.15]),
+                _t("乙方提供运维服务，服务期限自 2025 年 3 月 1 日", [0.08, 0.16, 0.76, 0.18]),   # 写满整栏
+                _t("至 2026 年 2 月 28 日。", [0.08, 0.19, 0.47, 0.21]),
+                _t("乙方负有保密义务，", [0.08, 0.22, 0.60, 0.24]),              # 以逗号结尾
+                _t("保密期限为三年。", [0.08, 0.25, 0.38, 0.27]),
+                _t("星河科技合同专用章", [0.71, 0.84, 0.82, 0.88]),             # 印章：孤立的文字块
+                _t("违约金为合同总额的 10%，从逾期之日起按日累计，直至付清为止且不", [0.08, 0.90, 0.76, 0.92]),
+                _t("¹ 注释", [0.08, 0.95, 0.3, 0.96], "page_footnote"),
+            ],
+            [
+                _t("超过合同总额。", [0.08, 0.05, 0.3, 0.07]),                   # 接上一页最后一行（跳过脚注）
+                _t("第四条 保密条款", [0.08, 0.10, 0.27, 0.12], continues_prev=True),   # MinerU 误标，不能接到印章上
+            ],
+        ))
+        texts = [e.text for e in elements]
+        self.assertIn("甲方：星河科技有限公司", texts)
+        self.assertIn("乙方：云帆数据服务有限公司", texts)
+        self.assertIn("乙方提供运维服务，服务期限自 2025 年 3 月 1 日至 2026 年 2 月 28 日。", texts)
+        self.assertIn("乙方负有保密义务，保密期限为三年。", texts)
+        self.assertIn("违约金为合同总额的 10%，从逾期之日起按日累计，直至付清为止且不超过合同总额。", texts)
+        self.assertIn("星河科技合同专用章", texts)
+        self.assertIn("第四条 保密条款", texts)
+        joined = next(e for e in elements if e.text.startswith("违约金"))
+        self.assertEqual((joined.page, joined.extra["page_end"]), (1, 2))
+
+    def test_office_paragraphs_without_bbox_are_not_joined(self):
+        elements = mineru_middle_to_elements(_middle([_t("第一段没有句号"), _t("第二段")]))
+        self.assertEqual([e.text for e in elements], ["第一段没有句号", "第二段"])
+
+    def test_table_continued_on_next_page(self):
+        def table(rows: str, **extra) -> dict:
+            return {"type": "table", "content": [{"type": "table_body", "content": f"<table>{rows}</table>"}], **extra}
+
+        head = "<tr><td>区域</td><td>营收</td></tr>"
+        expected = "| 区域 | 营收 |\n| --- | --- |\n| 华东 | 480 |\n| 华南 | 390 |"
+        for continued_rows in (head + "<tr><td>华南</td><td>390</td></tr>",    # 续页重复了表头
+                               "<tr><td>华南</td><td>390</td></tr>"):          # 续页直接接数据行
+            elements = mineru_middle_to_elements(_middle(
+                [table(head + "<tr><td>华东</td><td>480</td></tr>")],
+                [table(continued_rows, continues_prev=True)],
+            ))
+            self.assertEqual(len(elements), 1)
+            self.assertEqual(elements[0].text, expected)
+            self.assertEqual(elements[0].extra["page_end"], 2)
 
 
 @registry.register("parser", "_test_broken")
@@ -576,6 +727,17 @@ class TestStructureChunker(unittest.TestCase):
         chunks = StructureChunker(chunk_size=120, chunk_overlap=20).split(doc)
         self.assertGreater(len(chunks), 3)
         self.assertTrue(all(c.text.startswith("[员工手册]\n") for c in chunks))
+
+    def test_table_with_caption_and_note_is_split_by_rows(self):
+        """MinerU 的表格前面是表题、后面是表注：每块都带表题和表头，表注跟在最后一块。"""
+        rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(30)]
+        text = "表 1 报价单\n" + table_to_markdown(rows) + "\n注：价格含税。"
+        chunks = StructureChunker(chunk_size=150, chunk_overlap=20).split(self._doc([Element("table", text)]))
+        self.assertGreater(len(chunks), 1)
+        for c in chunks:
+            self.assertEqual(c.text.splitlines()[1:4], ["表 1 报价单", "| 型号 | 价格 |", "| --- | --- |"])
+        self.assertTrue(chunks[-1].text.endswith("注：价格含税。"))
+        self.assertEqual(sum(c.text.count("| M") for c in chunks), 30)
 
     def test_plain_document_falls_back(self):
         chunks = StructureChunker(chunk_size=50, chunk_overlap=10).split(Document("d", "纯文本。" * 30))
