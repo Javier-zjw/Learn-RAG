@@ -1,0 +1,98 @@
+[
+  {
+    "kind": "heading",
+    "text": "第一章 新员工入职",
+    "level": 1,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "欢迎加入星河科技！本章介绍入职第一周需要完成的事项。",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "1.1 第一周清单",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "- 领取工牌和电脑\n- 完成信息安全培训\n- 与导师进行首次一对一沟通",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "list": true,
+      "mineru_type": "list"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "1.2 考勤制度",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "公司实行弹性工作制，核心工作时间为 10:00 至 16:00。",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "第二章 福利待遇",
+    "level": 1,
+    "page": 2,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table><tr><th>福利项目</th><th>标准</th></tr> <tr><td>餐饮补贴</td><td>每月 600 元</td></tr><tr><td>年度体检</td><td>每年一次</td></tr> <tr><td>带薪年假</td><td>入职满一年 10 天</td></tr></table>",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "2025 年各区域营收如下图所示，绩效奖金与所在区域的业绩挂钩。",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "image",
+    "text": "各区域季度营收",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "image",
+      "asset": "e6/e64e52d7b87e579d3ff6b88848312fcfb0e025a28d14b8a6ab17076cb3b95202.png",
+      "sha256": "e64e52d7b87e579d3ff6b88848312fcfb0e025a28d14b8a6ab17076cb3b95202",
+      "mime": "image/png"
+    }
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "kind": "heading",
+    "text": "订单明细",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th colspan=\"6\"><p><strong>2025 </strong><strong>年第四季度订单明细</strong></p></th>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th><p>订单号</p></th>\n    <th><p>下单日期</p></th>\n    <th><p>区域</p></th>\n    <th><p>产品</p></th>\n    <th><p>数量</p></th>\n    <th><p>单价（元）</p></th>\n    <th><p>金额（元）</p></th>\n    <th><p>折扣率</p></th>\n  </tr>\n  <tr>\n    <td><p>XH-1001</p></td>\n    <td><p>2025-10-08</p></td>\n    <td><p>华东</p></td>\n    <td><p>数据平台标准版</p></td>\n    <td><p>3</p></td>\n    <td><p>29990</p></td>\n    <td><p>85471.5</p></td>\n    <td><p>5%</p></td>\n  </tr>\n  <tr>\n    <td><p>XH-1002</p></td>\n    <td><p>2025-10-21</p></td>\n    <td><p>华南</p></td>\n    <td><p>数据平台企业版</p></td>\n    <td><p>1</p></td>\n    <td><p>120000</p></td>\n    <td><p>108000</p></td>\n    <td><p>10%</p></td>\n  </tr>\n  <tr>\n    <td><p>XH-1003</p></td>\n    <td><p>2025-11-03</p></td>\n    <td><p>华北</p></td>\n    <td><p>数据平台基础版</p></td>\n    <td><p>10</p></td>\n    <td><p>9990</p></td>\n    <td><p>99900</p></td>\n    <td><p>0%</p></td>\n  </tr>\n  <tr>\n    <td><p>XH-1004</p></td>\n    <td><p>2025-11-17</p></td>\n    <td><p>西南</p></td>\n    <td><p>数据平台标准版</p></td>\n    <td><p>2</p></td>\n    <td><p>29990</p></td>\n    <td><p>59980</p></td>\n    <td><p>0%</p></td>\n  </tr>\n  <tr>\n    <td><p>XH-1005</p></td>\n    <td><p>2025-12-09</p></td>\n    <td><p>华东</p></td>\n    <td><p>运维服务包</p></td>\n    <td><p>5</p></td>\n    <td><p>18000</p></td>\n    <td><p>82800</p></td>\n    <td><p>8%</p></td>\n  </tr>\n  <tr>\n    <td><p>合计</p></td>\n    <td><p></p></td>\n    <td><p></p></td>\n    <td><p></p></td>\n    <td><p>21</p></td>\n    <td><p></p></td>\n    <td><p>436151.5</p></td>\n    <td><p></p></td>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th><p>产品</p></th>\n    <th><p>库存（套）</p></th>\n  </tr>\n  <tr>\n    <td><p>数据平台基础版</p></td>\n    <td><p>120</p></td>\n  </tr>\n  <tr>\n    <td><p>数据平台标准版</p></td>\n    <td><p>45</p></td>\n  </tr>\n  <tr>\n    <td><p>运维服务包</p></td>\n    <td><p>30</p></td>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "区域汇总",
+    "level": 2,
+    "page": 2,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th><p>区域</p></th>\n    <th><p>Q1</p></th>\n    <th><p>Q2</p></th>\n    <th><p>Q3</p></th>\n    <th><p>Q4</p></th>\n    <th><p>全年</p></th>\n    <th><p>占比</p></th>\n  </tr>\n  <tr>\n    <td><p>华东</p></td>\n    <td><p>320</p></td>\n    <td><p>360</p></td>\n    <td><p>410</p></td>\n    <td><p>480</p></td>\n    <td><p>1570</p></td>\n    <td><p>32.2%</p></td>\n  </tr>\n  <tr>\n    <td><p>华南</p></td>\n    <td><p>280</p></td>\n    <td><p>300</p></td>\n    <td><p>350</p></td>\n    <td><p>390</p></td>\n    <td><p>1320</p></td>\n    <td><p>27.0%</p></td>\n  </tr>\n  <tr>\n    <td><p>华北</p></td>\n    <td><p>260</p></td>\n    <td><p>270</p></td>\n    <td><p>330</p></td>\n    <td><p>380</p></td>\n    <td><p>1240</p></td>\n    <td><p>25.4%</p></td>\n  </tr>\n  <tr>\n    <td><p>西南</p></td>\n    <td><p>150</p></td>\n    <td><p>170</p></td>\n    <td><p>200</p></td>\n    <td><p>230</p></td>\n    <td><p>750</p></td>\n    <td><p>15.4%</p></td>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "image",
+    "text": "[图表]",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "chart"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "填表说明",
+    "level": 2,
+    "page": 3,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th><p>填表说明</p></th>\n  </tr>\n  <tr>\n    <td><p>1. 金额 = 数量 × 单价 ×（1 − 折扣率），由公式自动计算，请勿手工修改。</p></td>\n  </tr>\n  <tr>\n    <td><p>2. 折扣率超过 10% 需要销售总监审批。</p></td>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 3,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  }
+]

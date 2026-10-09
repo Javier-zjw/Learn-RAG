@@ -1,0 +1,364 @@
+[
+  {
+    "kind": "heading",
+    "text": "技术服务合同",
+    "level": 1,
+    "page": 1,
+    "bbox": [
+      0.379,
+      0.065,
+      0.6,
+      0.095
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "合同编号:XH-2025-0386",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.084,
+      0.133,
+      0.356,
+      0.155
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "甲方:星河科技有限公司",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.084,
+      0.173,
+      0.342,
+      0.195
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "乙方:云帆数据服务有限公司",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.085,
+      0.202,
+      0.387,
+      0.224
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "第一条 服务内容",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.086,
+      0.233,
+      0.269,
+      0.254
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "乙方为甲方提供数据平台运维服务，服务期限自 2025 年 3 月 1 日",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.086,
+      0.259,
+      0.757,
+      0.282
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "至2026年2月28日，共十二个月。",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.087,
+      0.29,
+      0.467,
+      0.313
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "第二条 服务费用及支付方式",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.088,
+      0.321,
+      0.384,
+      0.343
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "table",
+    "text": "<table><tr><td>付款期次</td><td>付款比例</td><td>金额(元)</td><td>付款时间</td></tr><tr><td>第一期</td><td>30%</td><td>54,000</td><td>签约后10日</td></tr><tr><td>第二期</td><td>40%</td><td>72,000</td><td>2025-09-01</td></tr><tr><td>第三期</td><td>30%</td><td>54,000</td><td>验收合格后</td></tr></table>",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.093,
+      0.35,
+      0.902,
+      0.484
+    ],
+    "extra": {
+      "mineru_type": "table",
+      "asset": "ce/ce1504745d89a02a4ca20983ee038db32c4b6647e55fc34f23233e8249bdeb48.jpg",
+      "sha256": "ce1504745d89a02a4ca20983ee038db32c4b6647e55fc34f23233e8249bdeb48",
+      "mime": "image/jpeg"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "合同总金额:人民币壹拾捌万元整（¥180,000.00）。",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.091,
+      0.506,
+      0.629,
+      0.529
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "第三条 违约责任",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.092,
+      0.537,
+      0.275,
+      0.558
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "任何一方违约，应向守约方支付合同总金额 10% 的违约金。",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.092,
+      0.563,
+      0.686,
+      0.587
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "星河科技合同专用章第四条 保密条款",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.713,
+      0.843,
+      0.819,
+      0.879
+    ],
+    "extra": {
+      "mineru_type": "text",
+      "page_end": 2
+    }
+  },
+  {
+    "kind": "text",
+    "text": "乙方对在服务过程中获知的甲方数据和商业信息负有保密义务，",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.082,
+      0.109,
+      0.719,
+      0.132
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "保密期限为合同终止后三年。",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.083,
+      0.141,
+      0.375,
+      0.162
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "第五条 争议解决",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.084,
+      0.171,
+      0.269,
+      0.192
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "因本合同引起的争议，双方应协商解决；协商不成的，",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.085,
+      0.198,
+      0.629,
+      0.221
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "提交甲方所在地人民法院诉讼解决。",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.085,
+      0.229,
+      0.444,
+      0.252
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "甲方（盖章）:",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.086,
+      0.306,
+      0.25,
+      0.328
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "授权代表:张明",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.086,
+      0.345,
+      0.273,
+      0.368
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "乙方（盖章）:",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.537,
+      0.301,
+      0.702,
+      0.324
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "授权代表:李华",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.538,
+      0.34,
+      0.725,
+      0.364
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "日期:2025年2月20日",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.088,
+      0.384,
+      0.364,
+      0.407
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "日期:2025年2月20日",
+    "level": 0,
+    "page": 2,
+    "bbox": [
+      0.54,
+      0.379,
+      0.815,
+      0.404
+    ],
+    "extra": {
+      "mineru_type": "text"
+    }
+  }
+]

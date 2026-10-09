@@ -1,0 +1,106 @@
+[
+  {
+    "kind": "heading",
+    "text": "星河科技发布数据平台 2.3 版本",
+    "level": 1,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "发布时间：2026-01-15　作者：产品部",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "1 月 15 日，星河科技正式发布数据平台 2.3 版本。新版本引入实时计算引擎， 查询延迟降低40%，并支持公式E = mc²这类行内代码的展示。",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "主要更新",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "1. 实时计算引擎\n- 支持 Kafka 与 Pulsar 数据源- 窗口聚合延迟低于 1 秒\n2. 新增 12 种图表类型\n3. 权限模型升级为基于角色的访问控制（RBAC）",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "list": true,
+      "mineru_type": "list"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "版本价格",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table> <tr><th rowspan=\"2\">版本</th><th colspan=\"2\">订阅价格（元）</th><th rowspan=\"2\">技术支持</th></tr> <tr><th>月费</th><th>年费</th></tr> <tr><td>基础版</td><td>999</td><td>9,990</td><td>无</td></tr> <tr><td>标准版</td><td>2,999</td><td>29,990</td><td>工作日</td></tr> <tr><td>企业版</td><td colspan=\"2\">面议</td><td>7×24 小时</td></tr> </table>",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "升级命令",
+    "level": 3,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "code",
+    "text": "dataplat upgrade --to 2.3 --backup /data/backup",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "“新版本让我们的日报生成时间从 2 小时缩短到 10 分钟。” —— 某零售客户",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "image",
+    "text": "图 1 各区域季度营收",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "image",
+      "asset": "e6/e64e52d7b87e579d3ff6b88848312fcfb0e025a28d14b8a6ab17076cb3b95202.png",
+      "sha256": "e64e52d7b87e579d3ff6b88848312fcfb0e025a28d14b8a6ab17076cb3b95202",
+      "mime": "image/png"
+    }
+  }
+]

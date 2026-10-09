@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "image",
+    "text": "季度营收趋势",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.019,
+      0.097,
+      0.983,
+      0.978
+    ],
+    "extra": {
+      "mineru_type": "chart",
+      "asset": "41/4177f38400fed6cbc63006928f0995b8df0c6cefd04389cb91c95b07042d7cac.jpg",
+      "sha256": "4177f38400fed6cbc63006928f0995b8df0c6cefd04389cb91c95b07042d7cac",
+      "mime": "image/jpeg"
+    }
+  }
+]

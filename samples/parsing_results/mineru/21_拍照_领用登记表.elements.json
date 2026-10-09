@@ -1,0 +1,33 @@
+[
+  {
+    "kind": "heading",
+    "text": "办公用品领用登记表",
+    "level": 2,
+    "page": 1,
+    "bbox": [
+      0.376,
+      0.07,
+      0.646,
+      0.139
+    ],
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table><tr><td>日期</td><td>领用人</td><td>物品</td><td>数量</td></tr><tr><td>1月6日</td><td>王芳</td><td>签字笔</td><td>10</td></tr><tr><td>1月8日</td><td>李华</td><td>笔记本</td><td>3</td></tr><tr><td>1月9日</td><td>张明</td><td>打印纸</td><td>2箱</td></tr><tr><td>1月12日</td><td>陈静</td><td>订书机</td><td>1</td></tr></table>",
+    "level": 0,
+    "page": 1,
+    "bbox": [
+      0.082,
+      0.155,
+      0.913,
+      0.896
+    ],
+    "extra": {
+      "mineru_type": "table",
+      "asset": "ed/ed2e0f2a38807dc825f8dc745788110a27a9817bf0fa7793211f14b207176947.jpg",
+      "sha256": "ed2e0f2a38807dc825f8dc745788110a27a9817bf0fa7793211f14b207176947",
+      "mime": "image/jpeg"
+    }
+  }
+]

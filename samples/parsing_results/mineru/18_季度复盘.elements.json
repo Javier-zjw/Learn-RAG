@@ -1,0 +1,202 @@
+[
+  {
+    "kind": "heading",
+    "text": "2025 年第四季度经营复盘",
+    "level": 1,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "星河科技 · 销售运营中心 · 2026 年 1 月",
+    "level": 2,
+    "page": 1,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "heading",
+    "text": "核心结论",
+    "level": 2,
+    "page": 2,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "text",
+    "text": "- 全年营收 4,860 万元，完成目标的 101%",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "list": true,
+      "mineru_type": "list"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "- 华东区第四季度营收 480 万元，环比增长 17.1%- 西南区全年增速 53.3%，为增长最快区域\n- 回款周期变长，应收账款周转天数 68 天\n- 需要重点关注前十大客户的续约",
+    "level": 0,
+    "page": 2,
+    "bbox": null,
+    "extra": {
+      "list": true,
+      "mineru_type": "list"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "区域营收明细（万元）",
+    "level": 2,
+    "page": 3,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "table",
+    "text": "<table><tbody><tr><td rowspan=\"2\"><p>区域</p></td><td colspan=\"2\"><p>上半年</p></td><td colspan=\"2\"><p>下半年</p></td><td rowspan=\"2\"><p>合计</p></td></tr><tr><td><p>Q1</p></td><td><p>Q2</p></td><td><p>Q3</p></td><td><p>Q4</p></td></tr><tr><td><p>华东</p></td><td><p>320</p></td><td><p>360</p></td><td><p>410</p></td><td><p>480</p></td><td><p>1570</p></td></tr><tr><td><p>华南</p></td><td><p>280</p></td><td><p>300</p></td><td><p>350</p></td><td><p>390</p></td><td><p>1320</p></td></tr><tr><td><p>华北</p></td><td><p>260</p></td><td><p>270</p></td><td><p>330</p></td><td><p>380</p></td><td><p>1240</p></td></tr><tr><td><p>西南</p></td><td><p>150</p></td><td><p>170</p></td><td><p>200</p></td><td><p>230</p></td><td><p>750</p></td></tr></tbody></table>",
+    "level": 0,
+    "page": 3,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "季度营收对比（原生图表）",
+    "level": 2,
+    "page": 4,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "image",
+    "text": "[图表]",
+    "level": 0,
+    "page": 4,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "chart",
+      "asset": "82/8222f56c3c7e36613387b9dc287d979daa7c3efe95fb29b6319b8581b82f66bd.jpg",
+      "sha256": "8222f56c3c7e36613387b9dc287d979daa7c3efe95fb29b6319b8581b82f66bd",
+      "mime": "image/jpeg"
+    }
+  },
+  {
+    "kind": "image",
+    "text": "[图表]",
+    "level": 0,
+    "page": 4,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "chart",
+      "asset": "82/8222f56c3c7e36613387b9dc287d979daa7c3efe95fb29b6319b8581b82f66bd.jpg",
+      "sha256": "8222f56c3c7e36613387b9dc287d979daa7c3efe95fb29b6319b8581b82f66bd",
+      "mime": "image/jpeg"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "报销流程与改进措施",
+    "level": 2,
+    "page": 5,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "image",
+    "text": "图：报销审批流程（图片）",
+    "level": 0,
+    "page": 5,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "image",
+      "asset": "e4/e4e4f99e4d1bd4b265e10e67c2b51ff253b760c76c4e6c2b479c7ac774cd1ebd.jpg",
+      "sha256": "e4e4f99e4d1bd4b265e10e67c2b51ff253b760c76c4e6c2b479c7ac774cd1ebd",
+      "mime": "image/jpeg"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "改进一",
+    "level": 0,
+    "page": 5,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "审批节点从 5 个减少到 4 个",
+    "level": 0,
+    "page": 5,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "改进二",
+    "level": 0,
+    "page": 5,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "发票自动识别，减少手工录入",
+    "level": 0,
+    "page": 5,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "heading",
+    "text": "趋势图（仅图片，检验图片中的文字识别）",
+    "level": 2,
+    "page": 6,
+    "bbox": null,
+    "extra": {}
+  },
+  {
+    "kind": "image",
+    "text": "[图片]",
+    "level": 0,
+    "page": 6,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "image",
+      "asset": "ae/ae2e4216a24dc5b013d5ba966bc8b6e59fa486f6d63768da57efa87a74b7b00f.png",
+      "sha256": "ae2e4216a24dc5b013d5ba966bc8b6e59fa486f6d63768da57efa87a74b7b00f",
+      "mime": "image/png"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "谢谢！",
+    "level": 0,
+    "page": 7,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  },
+  {
+    "kind": "text",
+    "text": "联系人：运营中心 王芳  分机 8021",
+    "level": 0,
+    "page": 7,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "text"
+    }
+  }
+]

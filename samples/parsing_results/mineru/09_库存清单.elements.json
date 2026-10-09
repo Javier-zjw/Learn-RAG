@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "table",
+    "text": "<table>\n  <tr>\n    <th>SKU</th>\n    <th>产品</th>\n    <th>仓库</th>\n    <th>库存</th>\n    <th>安全库存</th>\n  </tr>\n  <tr>\n    <td>SKU-01</td>\n    <td>数据平台基础版</td>\n    <td>上海仓</td>\n    <td>120</td>\n    <td>50</td>\n  </tr>\n  <tr>\n    <td>SKU-02</td>\n    <td>数据平台标准版</td>\n    <td>广州仓</td>\n    <td>45</td>\n    <td>60</td>\n  </tr>\n  <tr>\n    <td>SKU-03</td>\n    <td>运维服务包</td>\n    <td>北京仓</td>\n    <td>30</td>\n    <td>20</td>\n  </tr>\n</table>",
+    "level": 0,
+    "page": 1,
+    "bbox": null,
+    "extra": {
+      "mineru_type": "table"
+    }
+  }
+]
