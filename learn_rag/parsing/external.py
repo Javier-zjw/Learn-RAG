@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -51,7 +52,9 @@ class MinerUParser(DocumentParser):
             vlm_server_url: str = "http://127.0.0.1:30000",
             ocr_mode: str = "auto",
             image_analysis: bool = True,
+            raw_dir: str | None = None,
     ) -> None:
+        """raw_dir: 设置后把 MinerU 的原始结果 zip（含 middle_json.json 和图片）另存一份，用于排查解析问题"""
         if tier not in {"flash", "basic", "standard", "advanced"}:
             raise ValueError(f"不支持的 MinerU 解析档位：{tier}")
         self.tier = tier
@@ -60,6 +63,7 @@ class MinerUParser(DocumentParser):
         self.vlm_server_url = vlm_server_url.rstrip("/")
         self.ocr_mode = ocr_mode
         self.image_analysis = image_analysis
+        self.raw_dir = Path(raw_dir) if raw_dir else None
         # 相对资产目录按项目根解析，避免从不同目录启动 CLI 时把图片写到别处。
         if assets_dir is None:
             self.assets_dir = None
@@ -104,6 +108,9 @@ class MinerUParser(DocumentParser):
 
             if not zip_path.is_file():
                 raise RuntimeError(f"MinerU 没有生成结果 zip：{zip_path}")
+            if self.raw_dir is not None:
+                self.raw_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(zip_path, self.raw_dir / f"{path.name}.zip")   # 用完整文件名，避免同名不同格式互相覆盖
             try:
                 with ZipFile(zip_path) as archive:
                     if "middle_json.json" not in archive.namelist():

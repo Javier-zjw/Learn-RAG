@@ -358,6 +358,17 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertIn("standard", cmd)
         self.assertEqual(len(elements), 9)
 
+    def test_mineru_keeps_raw_zip(self):
+        def fake_run(cmd, **_):
+            self._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]), images={})
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run):
+            MinerUParser(raw_dir=tmp).parse(Path("a.pdf"))
+            with ZipFile(Path(tmp) / "a.pdf.zip") as archive:
+                self.assertIn("middle_json.json", archive.namelist())
+
     def test_mineru_office_files_skip_tier(self):
         """Office 等格式在 MinerU 里固定走 flash，显式传 --tier 会报错，所以不能带档位参数。"""
         def fake_run(cmd, **_):
