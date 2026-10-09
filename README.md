@@ -40,7 +40,7 @@
 | 环节 | 已实现组件 | 说明 |
 | --- | --- | --- |
 | 数据源 `source` | `memory`、`jsonl`、`directory`、`files` | 统一为 `Document` 流；`files` 解析 PDF / Office / 网页 / 图片（见下文“文档解析”） |
-| 文档解析 `parser` | `markdown`、`html`、`docx`、`pptx`、`xlsx`、`pdf`、`vlm_ocr`、`mineru`、`docling` | 各种文件统一解析为结构元素 `Element` |
+| 文档解析 `parser` | `markdown`、`html`、`docx`、`pptx`、`xlsx`、`csv`、`tsv`、`pdf`、`vlm_ocr`、`libreoffice`、`mineru`、`docling` | 各种文件统一解析为结构元素 `Element` |
 | 切分 `chunker` | `fixed`、`recursive`、`markdown`、`structure` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 / 基于解析结构切分 |
 | 向量化 `encoder` | `hashing`、`openai_compat`、`sentence_transformers`、`cached` | 特征哈希（零依赖离线可跑）/ 任意 OpenAI 兼容 embedding 服务（超批量上限时自动减半重试）/ 本地模型 / 带缓存的装饰器 |
 | 向量索引 `index` | `flat`、`chroma` | 暴力内积精确检索 / Chroma 持久化 HNSW（可调 `space`、`ef_construction`、`max_neighbors`、`ef_search`） |
@@ -60,11 +60,14 @@
 | `.docx` | `docx` | 按正文顺序读取段落与表格，标题层级取自样式 |
 | `.pptx` | `pptx` | 每页一个标题，按阅读顺序读取文本框和表格，收录演讲者备注 |
 | `.xlsx` | `xlsx` | 每个工作表一张表格，去掉空行空列，读取公式计算结果 |
+| `.csv` / `.tsv` | `csv` / `tsv` | 零依赖读取表格，自动兼容 UTF-8 / GBK 编码，可设行数上限防止超大文件 |
+| `.doc` / `.xls` / `.ppt` / `.rtf` | `libreoffice` | 调用 LibreOffice 无头转换成 OOXML 后复用上面的解析器；每次转换使用独立配置目录，支持并发 |
 | `.pdf` | `pdf` | 按字号识别标题层级、检测表格、去除重复页眉页脚和页码、合并跨页段落；文字层缺失的扫描页交给 OCR |
 | 图片 | `vlm_ocr` | 调用任意 OpenAI 兼容的视觉模型（PaddleOCR-VL、MinerU2.5、Qwen-VL 等）转写为 Markdown |
 
-- 版面复杂的 PDF 可在配置里改用 `mineru` 或 `docling` 适配器，并配置备选解析器，首选失败时自动降级。
-- `FileSource` 按“文件内容哈希 + 解析器 + 参数”缓存解析结果，调整切分策略、重建索引时不会重复解析；单个文件失败只记日志并跳过。
+- `configs/parsing.yaml` 预置企业级路由：PDF 首选 MinerU、Word 首选 Docling，未安装或失败时自动退回内置解析器；两路解析出的图片统一存入内容寻址资产库（按 SHA-256 去重），图注进入索引，资产路径记录在块元数据 `assets` 字段中。
+- MinerU 4.x 模型权重通过 ModelScope 自动下载到项目内的 `mineru_model_weight/`（已 gitignore），解析器通过 `MINERU_HOME` 加载该目录；CPU 部署可用 `scripts/start_mineru.sh` 读取 `.mineru.env` 并启动本地 VLM 服务。
+- `FileSource` 按“文件内容哈希 + 解析器 + 参数”缓存解析结果，调整切分策略、重建索引时不会重复解析；缓存原子写入、损坏自动重建；目录扫描跳过隐藏文件、Office 锁文件和未下载完成的临时文件，可按 `max_file_size` 限制单文件大小；单个文件失败只记日志并跳过。
 - `structure` 切分器以标题为边界切分，块首拼接“文档标题 > 章节路径”；表格单独成块，超长表格按行切分并在每块重复表头；每个块记录章节路径和页码范围，便于溯源。
 
 ### 3. 在线检索与生成链路
@@ -295,7 +298,7 @@ python scripts/run_ablation.py --suite all --dataset hotpotqa \
 - 文档解析的已知局限：
   - 原生 PDF / Word / PPT 解析器暂不处理内嵌图片（图表不会生成文字描述）；需要时改用 `mineru` 或 `docling`。
   - 原生 PDF 解析按文字块顺序读取，多栏排版可能出现阅读顺序错乱，复杂版面建议使用 `mineru`。
-  - `mineru` / `docling` 适配器目前只用模拟输出做过测试，接入真实环境后需要用自己的文档验证一次。
+  - MinerU 4.x 已按 `middle_json.zip` 输出适配，图片、图表和表格截图进入内容寻址资产库；复杂文档仍建议用自己的样本做召回质量验证。
   - 结构切分已记录章节路径，但“小块检索、返回整节上下文”的父子块检索尚未实现。
 
 ---

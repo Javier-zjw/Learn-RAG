@@ -14,13 +14,14 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from learn_rag.core.registry import registry
 from learn_rag.core.types import Document, Element
 from learn_rag.ingest.structure import StructureChunker
-from learn_rag.parsing.external import MinerUParser, content_list_to_elements, docling_to_elements
+from learn_rag.parsing.external import MinerUParser, docling_to_elements, mineru_middle_to_elements
 from learn_rag.parsing.markdown import markdown_to_elements, table_to_markdown
 from learn_rag.parsing.source import FileSource
 from learn_rag.parsing.web import HtmlParser
@@ -274,41 +275,128 @@ class TestVlmOcr(unittest.TestCase):
 
 
 class TestExternalAdapters(unittest.TestCase):
-    CONTENT_LIST = [
-        {"type": "header", "text": "内部资料", "page_idx": 0},
-        {"type": "text", "text": "第一章 总则", "text_level": 1, "page_idx": 0, "bbox": [1, 2, 3, 4]},
-        {"type": "text", "text": "正文内容。", "page_idx": 0},
-        {"type": "table", "table_caption": ["表1 价格"], "table_body": "<table><tr><td>A</td></tr></table>",
-         "table_footnote": [], "img_path": "images/t.jpg", "page_idx": 1},
-        {"type": "image", "image_caption": ["图1 架构"], "img_path": "images/i.jpg", "page_idx": 1},
-        {"type": "image", "image_caption": [], "img_path": "images/j.jpg", "page_idx": 1},
-        {"type": "equation", "text": "$$\nE=mc^2\n$$", "page_idx": 1},
-        {"type": "page_number", "text": "2", "page_idx": 1},
-    ]
+    MIDDLE = {
+        "schema": "docvortex.middle",
+        "pages": [
+            {
+                "page_idx": 0,
+                "blocks": [
+                    {"type": "aside_text", "content": [{"type": "text", "content": "内部资料"}]},
+                    {"type": "doc_title", "level": 1, "bbox": [0.1, 0.1, 0.8, 0.2],
+                     "content": [{"type": "text", "content": "企业手册"}]},
+                    {"type": "paragraph_title", "level": 2,
+                     "content": [{"type": "text", "content": "第一章 总则"}]},
+                    {"type": "text", "content": [{"type": "text", "content": "正文开"}]},
+                    {"type": "table", "content": [
+                        {"type": "table_caption", "content": [{"type": "text", "content": "表1 价格"}]},
+                        {"type": "table_body", "image_path": "images/table.jpg",
+                         "content": "<table><tr><td>A</td></tr></table>"},
+                    ]},
+                    {"type": "image", "content": [
+                        {"type": "image_body", "image_path": "images/pic.jpg", "content": ""},
+                        {"type": "image_caption", "content": [{"type": "text", "content": "图1 架构"}]},
+                    ]},
+                    {"type": "chart", "content": [
+                        {"type": "chart_body", "image_path": "images/chart.jpg", "content": ""},
+                    ]},
+                    {"type": "equation", "content": "E=mc^2"},
+                    {"type": "code", "guess_lang": "python", "content": [
+                        {"type": "code_body", "content": "print(1)"},
+                    ]},
+                    {"type": "list", "content": [
+                        {"type": "text", "content": [{"type": "text", "content": "要点一"}]},
+                        {"type": "text", "content": [{"type": "text", "content": "要点二"}]},
+                    ]},
+                    {"type": "page_number", "content": [{"type": "text", "content": "1"}]},
+                ],
+            },
+            {
+                "page_idx": 1,
+                "blocks": [
+                    {"type": "text", "continues_prev": True,
+                     "content": [{"type": "text", "content": "始并延续。"}]},
+                ],
+            },
+        ],
+    }
+    IMAGES = {
+        "images/table.jpg": b"table-bytes",
+        "images/pic.jpg": b"image-bytes",
+        "images/chart.jpg": b"chart-bytes",
+    }
 
-    def test_mineru_content_list(self):
-        elements = content_list_to_elements(self.CONTENT_LIST)
-        self.assertEqual(_kinds(elements), ["heading", "text", "table", "image", "formula"])
-        self.assertEqual((elements[0].level, elements[0].page, elements[0].bbox), (1, 1, [1, 2, 3, 4]))
-        self.assertTrue(elements[2].text.startswith("表1 价格\n<table>"))
-        self.assertEqual(elements[4].text, "E=mc^2")
+    @staticmethod
+    def _write_mineru_zip(path: Path, middle=None, images=None):
+        with ZipFile(path, "w") as archive:
+            archive.writestr("middle_json.json", json.dumps(middle or TestExternalAdapters.MIDDLE))
+            for name, data in (images if images is not None else TestExternalAdapters.IMAGES).items():
+                archive.writestr(name, data)
 
-    def test_mineru_runs_cli_and_reads_output(self):
+    def test_mineru_middle_blocks(self):
+        elements = mineru_middle_to_elements(self.MIDDLE)
+        self.assertEqual(_kinds(elements), ["heading", "heading", "text", "table", "image", "image", "formula", "code", "text"])
+        self.assertEqual((elements[0].level, elements[0].page, elements[0].bbox), (1, 1, [0.1, 0.1, 0.8, 0.2]))
+        self.assertEqual(elements[1].level, 2)
+        self.assertEqual((elements[2].text, elements[2].page, elements[2].extra["page_end"]), ("正文开始并延续。", 1, 2))
+        self.assertTrue(elements[3].text.startswith("表1 价格\n<table>"))
+        self.assertEqual((elements[4].text, elements[4].extra["mineru_type"]), ("图1 架构", "image"))
+        self.assertEqual((elements[5].text, elements[5].extra["mineru_type"]), ("[图表]", "chart"))
+        self.assertEqual(elements[6].text, "E=mc^2")
+        self.assertEqual(elements[7].text, "print(1)")
+        self.assertEqual(elements[8].text, "要点一\n要点二")
+
+    def test_mineru_runs_cli_and_reads_zip(self):
         def fake_run(cmd, **_):
-            out = Path(cmd[cmd.index("-o") + 1]) / "a" / "auto"
-            out.mkdir(parents=True)
-            (out / "a_content_list.json").write_text(json.dumps(self.CONTENT_LIST), encoding="utf-8")
+            self._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]))
             return SimpleNamespace(returncode=0)
 
         with patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run) as run:
-            elements = MinerUParser(backend="pipeline").parse(Path("a.pdf"))
-        self.assertIn("pipeline", run.call_args[0][0])
-        self.assertEqual(len(elements), 5)
+            elements = MinerUParser().parse(Path("a.pdf"))
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[:3], ["mineru-kit", "parse", "a.pdf"])
+        self.assertIn("zip", cmd)
+        self.assertIn("standard", cmd)
+        self.assertEqual(len(elements), 9)
 
     def test_mineru_missing_command(self):
         with patch("learn_rag.parsing.external.subprocess.run", side_effect=FileNotFoundError):
             with self.assertRaisesRegex(RuntimeError, "mineru"):
                 MinerUParser().parse(Path("a.pdf"))
+
+    def test_mineru_missing_command(self):
+        with patch("learn_rag.parsing.external.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(RuntimeError, "mineru"):
+                MinerUParser().parse(Path("a.pdf"))
+
+    def test_mineru_loads_weights_from_local_dir(self):
+        """模型权重必须从项目内目录加载：MINERU_HOME 显式指向 models_dir。"""
+        import os
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["env"] = dict(kwargs["env"])
+            self._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]), images={})
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 清掉外部环境里的同名变量，验证解析器自己注入了正确的值
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("MINERU_MODEL_SOURCE", None)
+                os.environ.pop("MINERU_HOME", None)
+                with patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run):
+                    MinerUParser(models_dir=tmp).parse(Path("a.pdf"))
+            self.assertEqual(seen["env"]["MINERU_HOME"], str(Path(tmp).resolve()))
+            self.assertEqual(seen["env"]["MINERU_MODEL_SOURCE"], "modelscope")
+            self.assertEqual(seen["env"]["MINERU_MODEL_SMALL_BACKEND"], "onnx")
+            self.assertEqual(seen["env"]["MINERU_MODEL_VLM_ENGINE"], "llama-cpp")
+            self.assertEqual(seen["env"]["MINERU_MODEL_VLM_SERVER_URL"], "http://127.0.0.1:30000")
+
+    def test_mineru_default_weights_dir_in_project(self):
+        root = Path(__file__).resolve().parents[1]
+        parser = MinerUParser()
+        self.assertEqual(parser.models_dir, root / "mineru_model_weight")
+        self.assertTrue(parser.models_dir.is_dir())
 
     def test_docling_items(self):
         def item(label, text="", page=1, **extra):
@@ -440,6 +528,293 @@ class TestStructureChunker(unittest.TestCase):
     def test_plain_document_falls_back(self):
         chunks = StructureChunker(chunk_size=50, chunk_overlap=10).split(Document("d", "纯文本。" * 30))
         self.assertGreater(len(chunks), 1)
+
+
+class TestTabular(unittest.TestCase):
+    """CSV / TSV：编码兼容、表格输出、行数上限。"""
+
+    def test_csv_utf8_bom(self):
+        from learn_rag.parsing.tabular import CsvParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "orders.csv"
+            path.write_text("\ufeff区域,数量\n华东,120\n", encoding="utf-8")
+            elements = CsvParser().parse(path)
+        self.assertEqual([e.kind for e in elements], ["heading", "table"])
+        self.assertEqual(elements[0].text, "orders")
+        self.assertIn("| 区域 | 数量 |", elements[1].text)
+        self.assertIn("| 华东 | 120 |", elements[1].text)
+
+    def test_csv_gbk_fallback(self):
+        from learn_rag.parsing.tabular import CsvParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gbk.csv"
+            path.write_text("区域,数量\n华北,80\n", encoding="gbk")
+            elements = CsvParser().parse(path)
+        self.assertIn("| 华北 | 80 |", elements[1].text)
+
+    def test_tsv(self):
+        from learn_rag.parsing.tabular import TsvParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.tsv"
+            path.write_text("a\tb\n1\t2\n", encoding="utf-8")
+            elements = TsvParser().parse(path)
+        self.assertIn("| a | b |", elements[1].text)
+        self.assertIn("| 1 | 2 |", elements[1].text)
+
+    def test_max_rows_truncates(self):
+        from learn_rag.parsing.tabular import CsvParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "big.csv"
+            path.write_text("h\n" + "\n".join(str(i) for i in range(5)), encoding="utf-8")
+            with self.assertLogs("learn_rag.parsing.tabular", level="WARNING"):
+                elements = CsvParser(max_rows=2).parse(path)
+        # 保留的 2 行 = 表头 + 1 行数据，Markdown 共 3 行
+        self.assertEqual(len(elements[1].text.splitlines()), 3)
+
+
+class TestLibreOffice(unittest.TestCase):
+    """旧版 Office：转换命令、并发隔离配置、失败提示。"""
+
+    def test_converts_and_delegates(self):
+        from learn_rag.parsing.legacy import LibreOfficeParser
+
+        seen = {}
+
+        class FakeParser:
+            def parse(self, path):
+                seen["converted"] = path.name
+                return [Element("text", "转换后的内容")]
+
+        class FakeRegistry:
+            def build(self, namespace, spec, **_):
+                seen["spec"] = dict(spec)
+                return FakeParser()
+
+        def fake_run(cmd, **_):
+            seen["cmd"] = cmd
+            out = Path(cmd[cmd.index("--outdir") + 1])
+            target = cmd[cmd.index("--convert-to") + 1]
+            out.joinpath(f"legacy.{target}").write_bytes(b"")
+            return SimpleNamespace(returncode=0)
+
+        with patch("learn_rag.parsing.legacy.subprocess.run", side_effect=fake_run), \
+             patch("learn_rag.parsing.legacy.registry", FakeRegistry()):
+            elements = LibreOfficeParser().parse(Path("legacy.doc"))
+        self.assertEqual([e.text for e in elements], ["转换后的内容"])
+        self.assertEqual(seen["converted"], "legacy.docx")
+        self.assertEqual(seen["spec"], {"type": "docx"})
+        self.assertIn("--headless", seen["cmd"])
+        # 并发转换必须使用独立的用户配置目录，否则会抢 LibreOffice 的配置锁
+        self.assertTrue(any(a.startswith("-env:UserInstallation=") for a in seen["cmd"]))
+
+    def test_missing_command_message(self):
+        from learn_rag.parsing.legacy import LibreOfficeParser
+
+        with patch("learn_rag.parsing.legacy.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(RuntimeError, "LibreOffice"):
+                LibreOfficeParser().parse(Path("a.doc"))
+
+    def test_unsupported_suffix(self):
+        from learn_rag.parsing.legacy import LibreOfficeParser
+
+        with self.assertRaises(ValueError):
+            LibreOfficeParser().parse(Path("a.docx"))
+
+
+class TestFileSourceHardening(unittest.TestCase):
+    """批处理稳定性：坏文件只能被隔离，不能中断整批导入。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_skips_temp_and_hidden_files(self):
+        (self.root / "a.md").write_text("# 好\n\n正文", encoding="utf-8")
+        (self.root / "~$a.docx").write_bytes(b"lock")          # Office 打开文档时的锁文件
+        (self.root / ".hidden.md").write_text("# 隐藏", encoding="utf-8")
+        (self.root / "b.tmp").write_text("x", encoding="utf-8")
+        docs = list(FileSource(str(self.root), cache_dir=None).load())
+        self.assertEqual([d.doc_id for d in docs], ["a.md"])
+
+    def test_max_file_size(self):
+        (self.root / "small.md").write_text("# 小\n\n正文", encoding="utf-8")
+        (self.root / "big.md").write_text("# 大\n\n" + "字" * 100, encoding="utf-8")
+        docs = list(FileSource(str(self.root), cache_dir=None, max_file_size=50).load())
+        self.assertEqual([d.doc_id for d in docs], ["small.md"])
+
+    def test_unreadable_file_is_isolated(self):
+        (self.root / "good.md").write_text("# 好\n\n正文", encoding="utf-8")
+        (self.root / "bad.md").write_text("# 坏", encoding="utf-8")
+        original = Path.read_bytes
+
+        def fake_read_bytes(path):
+            if path.name == "bad.md":
+                raise OSError("permission denied")
+            return original(path)
+
+        with patch.object(Path, "read_bytes", fake_read_bytes):
+            with self.assertLogs("learn_rag.parsing.source", level="ERROR"):
+                docs = list(FileSource(str(self.root), cache_dir=None).load())
+        self.assertEqual([d.doc_id for d in docs], ["good.md"])
+
+    def test_corrupt_cache_is_rebuilt(self):
+        (self.root / "a.md").write_text("# 标题\n\n正文", encoding="utf-8")
+        cache = self.root / "cache"
+        list(FileSource(str(self.root), cache_dir=str(cache)).load())
+        cache_file = next(cache.glob("*.json"))
+        cache_file.write_text("{broken", encoding="utf-8")
+
+        with self.assertLogs("learn_rag.parsing.source", level="WARNING"):
+            docs = list(FileSource(str(self.root), cache_dir=str(cache)).load())
+        self.assertEqual(docs[0].elements[0], Element("heading", "标题", level=1))
+        self.assertEqual(json.loads(cache_file.read_text(encoding="utf-8"))[0]["kind"], "heading")
+
+    def test_legacy_office_missing_soffice_does_not_break_batch(self):
+        (self.root / "a.md").write_text("# 好\n\n正文", encoding="utf-8")
+        (self.root / "old.doc").write_bytes(b"ole2")
+        with patch("learn_rag.parsing.legacy.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertLogs("learn_rag.parsing.source", level="ERROR"):
+                docs = list(FileSource(str(self.root), cache_dir=None).load())
+        self.assertEqual([d.doc_id for d in docs], ["a.md"])
+
+
+class TestEnterpriseRoutes(unittest.TestCase):
+    """企业级路由：PDF 首选 MinerU、Word 首选 Docling，未安装时自动降级且不中断。"""
+
+    def test_config_routes(self):
+        from learn_rag.core.config import load_config
+
+        cfg = load_config("configs/parsing.yaml")
+        self.assertEqual(cfg["parsing"]["parsers"][".pdf"], ["mineru", "pdf"])
+        self.assertEqual(cfg["parsing"]["parsers"][".docx"], ["docling", "docx"])
+
+    def test_pdf_falls_back_to_pymupdf(self):
+        try:
+            import pymupdf  # noqa: F401
+        except ImportError:
+            self.skipTest("未安装 pymupdf")
+        from learn_rag.parsing.external import MinerUParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf = pymupdf.open()
+            pdf.new_page().insert_text((72, 100), "A normal text page with enough characters.", fontsize=11)
+            pdf.save(root / "a.pdf")
+            with patch.object(MinerUParser, "parse", side_effect=RuntimeError("找不到 MinerU 命令")):
+                with self.assertLogs("learn_rag.parsing.source", level="WARNING"):
+                    docs = list(FileSource(str(root), parsers={".pdf": ["mineru", "pdf"]}, cache_dir=None).load())
+        self.assertEqual(docs[0].metadata["parser"], "pdf")
+        self.assertIn("normal text page", docs[0].text)
+
+    def test_docx_falls_back_to_python_docx(self):
+        try:
+            import docx  # noqa: F401
+        except ImportError:
+            self.skipTest("未安装 python-docx")
+        from learn_rag.parsing.external import DoclingParser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            d = docx.Document()
+            d.add_heading("制度", level=1)
+            d.add_paragraph("一线城市每晚上限 600 元。")
+            d.save(root / "a.docx")
+            with patch.object(DoclingParser, "parse", side_effect=RuntimeError("未安装 Docling")):
+                with self.assertLogs("learn_rag.parsing.source", level="WARNING"):
+                    docs = list(FileSource(str(root), parsers={".docx": ["docling", "docx"]}, cache_dir=None).load())
+        self.assertEqual(docs[0].metadata["parser"], "docx")
+        self.assertIn("600 元", docs[0].text)
+
+
+class TestAssetStorage(unittest.TestCase):
+    """图片资产：内容寻址去重、MinerU/Docling 提取、路径进入 chunk 元数据。"""
+
+    def test_save_asset_dedupes(self):
+        from learn_rag.parsing.assets import save_asset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = save_asset(b"png-bytes", tmp, ext="png", mime="image/png")
+            second = save_asset(b"png-bytes", tmp, ext="png", mime="image/png")
+            self.assertEqual(first, second)
+            self.assertEqual((Path(tmp) / first["asset"]).read_bytes(), b"png-bytes")
+            self.assertEqual(len(list(Path(tmp).rglob("*.png"))), 1)
+
+    def test_mineru_persists_images(self):
+        import hashlib
+
+        def fake_run(cmd, **_):
+            TestExternalAdapters._write_mineru_zip(Path(cmd[cmd.index("-o") + 1]))
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run):
+            elements = MinerUParser(assets_dir=tmp).parse(Path("a.pdf"))
+            for element in elements:
+                if element.kind == "table":
+                    expected = TestExternalAdapters.IMAGES["images/table.jpg"]
+                elif element.kind == "image":
+                    expected = TestExternalAdapters.IMAGES[f"images/{element.extra['mineru_type']}.jpg"]
+                else:
+                    continue
+                self.assertEqual(element.extra["sha256"], hashlib.sha256(expected).hexdigest())
+                self.assertEqual((Path(tmp) / element.extra["asset"]).read_bytes(), expected)
+
+    def test_mineru_rejects_unsafe_image_path(self):
+        unsafe = {
+            "schema": "docvortex.middle",
+            "pages": [{
+                "page_idx": 0,
+                "blocks": [{
+                    "type": "image",
+                    "content": [{"type": "image_body", "image_path": "../evil.jpg", "content": ""}],
+                }],
+            }],
+        }
+
+        def fake_run(cmd, **_):
+            TestExternalAdapters._write_mineru_zip(
+                Path(cmd[cmd.index("-o") + 1]), middle=unsafe, images={"evil.jpg": b"bad"}
+            )
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run), \
+             self.assertLogs("learn_rag.parsing.external", level="WARNING"):
+            elements = MinerUParser(assets_dir=tmp).parse(Path("a.pdf"))
+        self.assertEqual((elements[0].text, elements[0].extra), ("[图片]", {"mineru_type": "image"}))
+
+    def test_docling_persists_pictures(self):
+        class FakePil:
+            def save(self, fh, format=None, **_):
+                fh.write(b"png-bytes")
+
+        picture = SimpleNamespace(
+            label=SimpleNamespace(value="picture"),
+            text="",
+            prov=[SimpleNamespace(page_no=1, bbox=SimpleNamespace(l=0, t=1, r=2, b=3))],
+            caption_text=lambda doc: "图1 流程图",
+            image=SimpleNamespace(pil_image=FakePil(), mimetype="image/png"),
+        )
+        doc = SimpleNamespace(iterate_items=lambda: [(picture, 0)])
+        with tempfile.TemporaryDirectory() as tmp:
+            elements = docling_to_elements(doc, assets_dir=tmp)
+            self.assertEqual(elements[0].text, "图1 流程图")
+            self.assertEqual((Path(tmp) / elements[0].extra["asset"]).read_bytes(), b"png-bytes")
+
+    def test_image_asset_reaches_chunk_metadata(self):
+        doc = Document.from_elements("manual.pdf", [
+            Element("heading", "架构", level=1),
+            Element("image", "图1 总体架构", extra={"asset": "ab/abc.png", "sha256": "abc", "mime": "image/png"}),
+        ], {"title": "手册"})
+        chunks = StructureChunker(chunk_size=200).split(doc)
+        self.assertEqual(chunks[0].metadata["assets"], ["ab/abc.png"])
 
 
 class TestEndToEnd(unittest.TestCase):

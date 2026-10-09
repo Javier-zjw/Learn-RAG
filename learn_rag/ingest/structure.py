@@ -122,4 +122,8 @@ def _describe(path: list[str], group: list[Element]) -> dict[str, object]:
     pages = [p for e in group for p in (e.page, e.extra.get("page_end")) if p]
     if pages:
         meta["page_start"], meta["page_end"] = min(pages), max(pages)
+    # 资产库里的相对路径跟着块走：图片、图表和表格截图都能按 ID 取回原图
+    assets = [e.extra["asset"] for e in group if e.extra.get("asset")]
+    if assets:
+        meta["assets"] = assets
     return meta

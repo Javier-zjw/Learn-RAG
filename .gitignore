@@ -12,6 +12,16 @@ debug/
 
 # 本地密钥，绝不提交
 .env
+# 本机 MinerU 服务配置（含绝对路径），绝不提交
+.mineru.env
+
+# 本地协作者指南，不提交
+AGENTS.md
+
+# MinerU 模型权重（ModelScope 下载缓存，体积大且与机器无关）
+mineru_model_weight/
+# MinerU 文档库的内容寻址输出缓存
+blobs/
 # macOS
 .DS_Store
 

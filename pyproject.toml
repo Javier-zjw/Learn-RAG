@@ -29,7 +29,7 @@ parsing = [
     "openpyxl>=3.1",
 ]
 # 高精度解析工具（体积大，按需安装）
-mineru = ["mineru[core]>=2.5"]
+mineru = ["mineru>=4.0,<5"]
 docling = ["docling>=2.0"]
 all = [
     "python-dotenv>=1.0",

@@ -13,15 +13,34 @@ chunker:
 
 parsing:
   cache_dir: .cache/parsed
-  # 按后缀覆盖默认解析器，列表表示依次尝试（首选失败自动降级）。默认：
-  #   .md/.txt -> markdown   .html -> html   .docx -> docx   .pptx -> pptx   .xlsx -> xlsx
-  #   .pdf -> pdf（PyMuPDF）  .png/.jpg -> vlm_ocr
-  # 版面复杂的 PDF 可改用 MinerU（pip install -U "mineru[core]"），失败时退回 PyMuPDF：
-  # parsers:
-  #   .pdf: [mineru, pdf]
-  # options:
-  #   mineru: {backend: pipeline, lang: ch}
-  #
+
+  # 企业级路由：首选高精度解析器，未安装或失败时自动退回内置解析器，离线机器也能跑通。
+  parsers:
+    .pdf: [mineru, pdf]        # MinerU：版面 / 复杂表格 / 公式 / 扫描件更准，退回 PyMuPDF
+    .docx: [docling, docx]     # Docling：Word 标题、表格、图片的结构还原更完整，退回 python-docx
+
+  # 图片二进制统一存入内容寻址资产库（按 SHA-256 去重）；图注文本进入索引，
+  # 资产相对路径记录在 Element.extra.asset 和 chunk 元数据的 assets 字段里。
+  options:
+    mineru:
+      tier: standard
+      assets_dir: .cache/assets
+      # MinerU 4.x 模型根目录：MINERU_HOME 会指向这里，权重从 ModelScope 自动下载；
+      # 相对路径按项目根解析，内网部署可直接拷贝该目录
+      models_dir: mineru_model_weight
+      # CPU 部署使用独立 llama-cpp VLM 服务；脚本 scripts/start_mineru.sh 会加载 .mineru.env
+      vlm_server_url: http://127.0.0.1:30000
+    docling:
+      assets_dir: .cache/assets
+
+  # 其余格式默认路由：
+  #   .md/.txt -> markdown   .html -> html   .pptx -> pptx   .xlsx -> xlsx
+  #   .doc/.rtf/.xls/.ppt -> libreoffice（需系统安装 LibreOffice，转成 OOXML 后复用内置解析器）
+  #   .csv -> csv   .tsv -> tsv   .png/.jpg -> vlm_ocr
+  # 目录扫描自动跳过隐藏文件、Office 锁文件和未下载完的临时文件；
+  # 可选 max_file_size（字节）限制单文件大小，超过则跳过并告警。
+  # max_file_size: 104857600
+
   # 扫描页与图片的 OCR：任意 OpenAI 兼容的视觉模型服务（PaddleOCR-VL、MinerU2.5、Qwen-VL 等）。
   # 读取 OCR_BASE_URL / OCR_API_KEY / OCR_MODEL；不配置则扫描页和图片会被跳过并告警。
   # ocr:
