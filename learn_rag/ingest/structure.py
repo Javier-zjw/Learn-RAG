@@ -14,7 +14,10 @@ ingest.structure —— 结构感知的父子分块。
   4. 不能拆开的组合：公式和图片紧跟前一个元素（"按下式计算："和公式、"如图 2 所示"和图片），
      以冒号结尾的引导句紧跟后一个元素（"部署前需要准备以下环境："和后面的列表、表格）；
   5. 一个元素自己就放不下时交给 pieces.split_element：段落按句、表格按行（每片带表题和表头）、代码按行切；
-  6. 只有一个子块的父块不生成：它和子块内容相同，展开没有意义，还要多存一份。
+  6. 只有一个子块的父块不生成：它和子块内容相同，展开没有意义，还要多存一份；
+  7. 句子重叠（overlap_sentences，默认关闭）：只在一个长段落被切成几个子块时，下一块开头重复上一块的
+     最后几句。切口都在元素或句子边界上，上下文又由父块补全，大多数情况不需要重叠；评测发现"它""该方案"
+     这类指代在子块边界处导致漏召回时再打开。父块不重叠，它交给大模型，重复内容只会浪费上下文。
 
 子块的 metadata.parent_id 指向父块。父块和子块都从 split() 返回，由知识库决定谁进索引、谁只存储。
 每个块都记录章节路径、页码范围、元素类型和图片资产，回答时可以溯源到页、取回原图。
@@ -36,17 +39,23 @@ Section = tuple[list[str], list[Element], int]
 
 @registry.register("chunker", "structure")
 class StructureChunker(Chunker):
-    def __init__(self, chunk_size: int = 300, parent_size: int = 1200) -> None:
+    def __init__(self, chunk_size: int = 300, parent_size: int = 1200, overlap_sentences: int = 0) -> None:
         if parent_size and parent_size <= chunk_size:
             raise ValueError("parent_size 必须大于 chunk_size；设为 0 表示不生成父块")
+        if overlap_sentences < 0:
+            raise ValueError("overlap_sentences 不能为负数；0 表示不重叠")
         self.chunk_size = chunk_size
         self.parent_size = parent_size
+        self.overlap_sentences = overlap_sentences
 
     def split(self, document: Document) -> list[Chunk]:
         elements = document.elements or _paragraphs(document.text)
         chunks: list[Chunk] = []
         for group in self._parent_groups(_sections(elements)):
-            children = [(path, piece) for path, body in group for piece in _pack(body, self.chunk_size)]
+            children = [
+                (path, piece) for path, body in group
+                for piece in _pack(body, self.chunk_size, self.overlap_sentences)
+            ]
             parent_id = None
             if self.parent_size and len(children) > 1:
                 path, text = _render_parent(group)
@@ -79,14 +88,17 @@ class StructureChunker(Chunker):
         return groups
 
 
-def _pack(elements: list[Element], budget: int) -> list[list[Element]]:
-    """按顺序把元素装进不超过 budget 的若干组。不能拆开的组合整体装入，整体放不下时才拆开，单个元素超长时切片。"""
+def _pack(elements: list[Element], budget: int, overlap: int = 0) -> list[list[Element]]:
+    """
+    按顺序把元素装进不超过 budget 的若干组。不能拆开的组合整体装入，整体放不下时才拆开，单个元素超长时切片。
+    overlap 是长段落切片之间重复的句子数，原样交给 split_element。
+    """
     groups: list[list[Element]] = []
     current: list[Element] = []
     used = 0
     for unit in _units(elements):
         size = sum(element_size(e) for e in unit)
-        parts = [unit] if size <= budget else [[piece] for e in unit for piece in split_element(e, budget)]
+        parts = [unit] if size <= budget else [[piece] for e in unit for piece in split_element(e, budget, overlap)]
         for part in parts:
             size = sum(element_size(e) for e in part)
             if current and used + size > budget:

@@ -74,6 +74,36 @@ class TestSplitElement(unittest.TestCase):
         self.assertEqual("".join(p.text for p in pieces), "字" * 100)
         self.assertTrue(all(count_tokens(p.text) <= 30 for p in pieces))
 
+    def test_long_sentence_split_at_commas(self):
+        """只有逗号没有句号的长句在逗号处断开，不按字数硬切；数字里的英文逗号不算断点。"""
+        text = "，".join(f"第{i}项指标为4,860万元" for i in range(20)) + "。"
+        pieces = split_element(Element("text", text), 40)
+        self.assertGreater(len(pieces), 2)
+        self.assertTrue(all(p.text.endswith(("，", "。")) for p in pieces))
+        self.assertTrue(all(count_tokens(p.text) <= 40 for p in pieces))
+        self.assertEqual("".join(p.text for p in pieces), text)
+
+    def test_sentence_overlap(self):
+        sentences = [f"第{i}句话讲一件事。" for i in range(40)]
+        text = "".join(sentences)
+        plain = split_element(Element("text", text), 30)
+        pieces = split_element(Element("text", text), 30, overlap=1)
+        self.assertGreater(len(pieces), len(plain))
+        self.assertTrue(all(count_tokens(p.text) <= 30 for p in pieces))
+        for prev, nxt in zip(pieces, pieces[1:]):
+            last = prev.text[prev.text.rindex("。", 0, len(prev.text) - 1) + 1:]
+            self.assertTrue(nxt.text.startswith(last))
+        # 去掉重叠后，内容和不重叠时完全一致
+        self.assertEqual("".join(p.text for p in plain), text)
+
+    def test_overlap_skips_blank_lines_and_tables(self):
+        text = "\n\n".join(f"第{i}句话讲一件事。" for i in range(40))
+        pieces = split_element(Element("text", text), 30, overlap=1)
+        self.assertTrue(all(p.text.startswith("第") for p in pieces))
+        rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(30)]
+        table = Element("table", table_to_markdown(rows))
+        self.assertEqual(split_element(table, 60, overlap=2), split_element(table, 60))
+
     def test_markdown_table_keeps_caption_header_and_note(self):
         rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(30)]
         text = "表 1 报价单\n" + table_to_markdown(rows) + "\n注：价格含税。"
@@ -209,6 +239,20 @@ class TestStructureChunker(unittest.TestCase):
         self.assertEqual(image.metadata["assets"], ["ab/flow.png"])
         listing = next(c for c in children if "16 GB" in c.text)
         self.assertIn("以下环境：", listing.text)
+
+    def test_sentence_overlap_only_between_children(self):
+        text = "".join(f"第{i}条规定适用于全体员工。" for i in range(40))
+        doc = _doc([Element("heading", "制度", level=1), Element("text", text)])
+        plain = StructureChunker(chunk_size=60, parent_size=600).split(doc)
+        chunks = StructureChunker(chunk_size=60, parent_size=600, overlap_sentences=1).split(doc)
+        children = [c for c in chunks if "parent_id" in c.metadata]
+        for prev, nxt in zip(children, children[1:]):
+            self.assertTrue(_body(nxt).startswith(_body(prev).rsplit("。", 2)[-2] + "。"))
+        # 父块不重叠：和关闭重叠时完全一样
+        parents = lambda cs: [c.text for c in cs if "parent_id" not in c.metadata]
+        self.assertEqual(parents(chunks), parents(plain))
+        with self.assertRaises(ValueError):
+            StructureChunker(overlap_sentences=-1)
 
     def test_parent_size_zero_disables_parents(self):
         doc = _doc([Element("heading", "章", level=1)] + [Element("text", "字" * 40) for _ in range(5)])

@@ -2,7 +2,8 @@
 ingest.pieces —— 把一个超长元素切成若干不超过预算的片段，并且每一片单独看都是完整的。
 
 结构切分器装箱时遇到一个元素自己就放不下，才会调用这里。不同类型的元素，"完整"的含义不同：
-  text     按句子切，句子本身超长才按字数硬切；
+  text     按句子切；句子本身超长时在逗号、顿号、冒号处断开，连这样的分句都超长才按字数硬切。
+           可选句子重叠：下一片开头重复上一片的最后几句，弥补"它""该方案"这类指代在切口处丢失；
   table    按行切，每片都带上表题和表头，表注跟在最后一片；合并单元格先展开成普通网格，
            否则"华东"只出现在跨行单元格的第一行，后面几片就不知道是哪个区域的数据；
   code     按行切，不会把一行代码从中间断开；
@@ -19,6 +20,8 @@ from ..core.types import Element
 
 # 在句末标点、分号和换行之后断句；英文句号要求后面跟空格，避免切开 3.14 和 config.yaml
 _SENTENCE_END = re.compile(r"(?<=[。！？；!?;\n])|(?<=\. )")
+# 超长句子在逗号、顿号、冒号之后断开；英文逗号同样要求后面跟空格，避免切开 4,860 这样的数字
+_CLAUSE_END = re.compile(r"(?<=[，、：])|(?<=, )")
 _HTML_TABLE = re.compile(r"<table.*?</table>", re.S | re.I)
 
 
@@ -27,8 +30,12 @@ def element_size(element: Element) -> int:
     return count_tokens(element.to_markdown())
 
 
-def split_element(element: Element, budget: int) -> list[Element]:
-    """把超过 budget 的元素切成若干片，不超过的原样返回。切出的片段保留原元素的页码和附加信息，并记录序号 part。"""
+def split_element(element: Element, budget: int, overlap: int = 0) -> list[Element]:
+    """
+    把超过 budget 的元素切成若干片，不超过的原样返回。切出的片段保留原元素的页码和附加信息，并记录序号 part。
+
+    overlap 是段落相邻两片之间重复的句子数，只作用于段落：表格每片已经重复了表头，代码重复几行没有意义。
+    """
     if element.kind in ("formula", "image", "heading") or element_size(element) <= budget:
         return [element]
     if element.kind == "table":
@@ -36,8 +43,7 @@ def split_element(element: Element, budget: int) -> list[Element]:
     elif element.kind == "code":
         texts = _pack(element.text.splitlines(keepends=True), budget)
     else:
-        sentences = [s for s in _SENTENCE_END.split(element.text) if s]
-        texts = _pack([part for s in sentences for part in _cut(s, budget)], budget)
+        texts = _pack([part for s in _sentences(element.text) for part in _fit(s, budget)], budget, overlap)
     if len(texts) <= 1:
         return [element]
     return [
@@ -68,23 +74,53 @@ def _split_table(text: str, budget: int) -> list[str]:
     return pieces
 
 
-def _pack(units: list[str], budget: int) -> list[str]:
-    """按顺序把小段文字拼成不超过 budget 的片段。单个小段超出预算时独占一片，不在这里切开它。"""
-    pieces: list[str] = []
-    current, used = "", 0
+def _pack(units: list[str], budget: int, overlap: int = 0) -> list[str]:
+    """
+    按顺序把小段文字拼成不超过 budget 的片段。单个小段超出预算时独占一片，不在这里切开它。
+
+    overlap > 0 时，新片段先带上前一片的最后 overlap 段；带上之后放不下新的一段，就从最早的一段开始少带，
+    保证重叠永远不会让片段超出预算。
+    """
+    pieces: list[list[str]] = []
+    current: list[str] = []
     for unit in units:
         size = count_tokens(unit)
-        if current.strip() and used + size > budget:
+        if current and _size(current) + size > budget:
             pieces.append(current)
-            current, used = "", 0
-        current += unit
-        used += size
+            current = current[-overlap:] if overlap else []
+            while current and _size(current) + size > budget:
+                current.pop(0)
+        current.append(unit)
     pieces.append(current)
-    return [p.strip() for p in pieces if p.strip()]
+    texts = ["".join(piece).strip() for piece in pieces]
+    return [t for t in texts if t]
+
+
+def _size(units: list[str]) -> int:
+    return sum(count_tokens(u) for u in units)
+
+
+def _sentences(text: str) -> list[str]:
+    """断句。只有空白的片段（段内空行）并进前一句，否则句子重叠时可能只重复了一个换行。"""
+    sentences: list[str] = []
+    for part in _SENTENCE_END.split(text):
+        if sentences and not part.strip():
+            sentences[-1] += part
+        elif part:
+            sentences.append(part)
+    return sentences
+
+
+def _fit(sentence: str, budget: int) -> list[str]:
+    """超长句子先在逗号、顿号、冒号处断成分句，分句仍然超长才按字数硬切。"""
+    if count_tokens(sentence) <= budget:
+        return [sentence]
+    clauses = [c for c in _CLAUSE_END.split(sentence) if c]
+    return [part for clause in clauses for part in _cut(clause, budget)]
 
 
 def _cut(text: str, budget: int) -> list[str]:
-    """没有标点可断的超长句子（OCR 结果、长网址）只能按字数硬切，字数按 token 比例换算。"""
+    """没有标点可断的超长文字（OCR 结果、长网址）只能按字数硬切，字数按 token 比例换算。"""
     tokens = count_tokens(text)
     if tokens <= budget:
         return [text]
