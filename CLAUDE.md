@@ -18,6 +18,8 @@ learn-rag ask --corpus data/sample_corpus.jsonl -q "什么是RRF?"
 learn-rag eval --dataset jsonl --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
 python scripts/run_ablation.py --suite channel --dataset jsonl \
     --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
+learn-rag serve                                # 可视化建库页面（先在 web/ 下 npm install && npm run build）
+cd web && npm run dev                          # 前端开发服务器，/api 转发到 learn-rag serve
 ```
 
 修改代码后至少跑一遍单元测试，并用示例数据跑通一次 `ask` 或 `eval`。
@@ -33,6 +35,8 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - `learn_rag/generation/`：LLM 客户端与生成策略
 - `learn_rag/pipeline/rag.py`：`RagPipeline`（在线门面），`from_config` 是唯一的「配置 → 对象图」构建入口
 - `learn_rag/eval/`：数据集适配、指标、`Evaluator`
+- `learn_rag/server/`：可视化建库的后端（FastAPI），`library.py` 是门面，`app.py` 只暴露接口
+- `web/`：可视化建库的前端（Vue 3 + Vite + TypeScript + Element Plus）
 - `configs/`：YAML 配置，CLI 总是先加载 `default.yaml`，再按顺序叠加 `--config`
 - `scripts/`：数据准备、数据检查、消融实验
 
@@ -96,6 +100,16 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **过滤条件按查询传递**：`Retriever.retrieve(query, top_k, *, where=None)`。组合型检索器（混合、查询改写）必须把 `where` 原样传给每一路；新增召回通道必须实现过滤，语法与 `store/indexes.py` 的 `_match` 一致（等值或 in 列表，只能过滤标量字段）。
 - **BM25 切词**：建索引用 `_terms`（通用切词 + 整体编号 + 编号碎片），查询用 `_query_terms`（有完整编号时以编号整体代替碎片）。改 BM25 切词不影响向量，已有索引打开时自动按新规则重建；不要改 `index_tokens`，它同时决定 Hashing 向量，改了必须重建索引。
 
+## 可视化建库（`learn_rag/server/`、`web/`）
+
+- **后端只编排、不重写建库逻辑**：解析走 `FileSource.load_file`，写入、增量、模型检查、核对都走 `KnowledgeBase`。`app.py` 只做参数解析和错误码翻译（`NotFound` → 404、`ValueError` → 400、`Busy` → 409），逻辑都放在 `Library`。
+- **一个知识库一个目录，参数固定**：改参数走 `rebuild`，只有换 embedding 模型或向量库参数时才清空片段库。知识库 id 随机生成，不复用目录。
+- **页面参数 → 配置的翻译只在一处**：`Library.validate` 和 `Library._config`。新增一个页面参数时同时改 `validate`、`environment.default_settings` 和前端 `SettingsForm.vue`。
+- **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
+- **密钥不出后端**：页面只看到“是否已配置”，地址和密钥由 encoder 从环境变量读取，不写进 `kb.json`。
+- **前端约定**：请求都走 `src/api.ts`；颜色只用 `styles.css` 里的令牌（浅色、深色各一套）；分块底色要保证正文对比度不低于 12:1；动画要尊重 `prefers-reduced-motion`；`defineModel` 在同一轮里只赋值一次（连续赋值会读到旧值、互相覆盖）。
+- 改动后跑 `python -m unittest tests.test_server`、`cd web && npm run build`（含类型检查），再用 `learn-rag serve` 在浏览器里走一遍“上传 → 推荐 → 建库 → 查看分块”。
+
 ## 代码风格
 
 - 注释与 docstring 使用中文，重点解释「为什么这样设计」和容易踩的坑，与现有代码密度保持一致。
@@ -107,4 +121,4 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 
 - 提交信息使用中文，**不超过 50 个字**，一行说清做了什么。
 - 提交信息中**不要出现 "Claude Code" 字样**，也不要附加 Co-Authored-By、会话链接等署名行。
-- 不要提交 `.env`、`data/`、`runs/`、`vector_store/`、`.idea/`、`.DS_Store` 等本地文件（已在 `.gitignore` 中）。
+- 不要提交 `.env`、`data/`、`runs/`、`vector_store/`、`.idea/`、`.DS_Store`、`web/node_modules/`、`web/dist/` 等本地文件（已在 `.gitignore` 中）。
