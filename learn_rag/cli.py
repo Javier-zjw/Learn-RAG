@@ -1,10 +1,12 @@
 """
 learn_rag.cli —— 命令行入口。
 
-三个子命令对应 RAG 的三件事：
-    ask   一次问答（含证据展示）——「跑起来」
-    eval  在数据集上评测       ——「量出来」
-    ls    查看有哪些可用实现   ——「换得动」
+主要子命令：
+    build   离线建库并持久化   ——「存下来」
+    verify  核对知识库是否完整 ——「查得清」
+    ask     一次问答（含证据展示）——「跑起来」
+    eval    在数据集上评测       ——「量出来」
+    ls      查看有哪些可用实现   ——「换得动」
 
 用法示例：
     python -m learn_rag.cli ask   --config configs/default.yaml --corpus data/sample_corpus.jsonl -q "什么是RRF?"
@@ -118,17 +120,15 @@ def cmd_ask(args: argparse.Namespace) -> None:
 
 def _load_index(pipe: RagPipeline, cfg: dict) -> None:
     """
-    没有现场建索引时，加载 build 落盘的索引。
-
-    向量（Chroma）本身是持久化的，不加载也能查到，但 BM25 和父块只在这里读回来：
-    漏掉这一步，混合检索会静默退化成纯向量，命中的子块也换不成父块，而且不报错。
+    没有现场建索引时，打开 build 建好的知识库：flat 索引从落盘目录读文件，Chroma 本身就是持久化的。
+    BM25 倒排和父块表都从片段库重建，不会和向量对不上。
     """
     persist = _persist_dir(cfg)
     if (Path(persist) / "meta.json").exists():
         pipe.kb.load(persist)
-        print(f"[复用索引] {persist} → " + "　".join(f"{k}={v}" for k, v in pipe.kb.stats().items()))
     if not len(pipe.kb.vector_index):
         raise SystemExit(f"索引为空：没有找到 {persist}。先运行 build 建库，或用 --docs / --corpus 现场建索引")
+    print(f"[复用索引] {persist} → " + "　".join(f"{k}={v}" for k, v in pipe.kb.stats().items()))
 
 
 _ASSET_KINDS = {"image": "图片", "table": "表格截图"}
@@ -210,21 +210,47 @@ def cmd_build(args: argparse.Namespace) -> None:
     stats = pipe.index(docs, progress=True)
     elapsed = time.perf_counter() - t0
 
-    # 关键：**两路索引都要落盘**。
-    # 只持久化向量库的话，复用时 BM25 是空的，混合检索会静默退化成纯向量 ——
-    # 指标莫名其妙下降，却不会有任何报错。这类"静默降级"最难排查。
+    # 片段库是唯一的数据来源（Chroma 写入即落盘，flat 在 save 时写文件）；
+    # BM25 和父块表打开时从片段库重建，不会出现"向量更新了、BM25 还是旧的"这种静默错位
     persist = _persist_dir(cfg)
-    if hasattr(pipe, "kb"):
-        pipe.kb.save(persist)
+    pipe.kb.save(persist)
 
     print("\n[建库完成] " + "　".join(f"{k}={v}" for k, v in stats.items()))
-    print(f"  耗时 {elapsed:.1f}s，平均 {elapsed / max(stats.get('chunks', 1), 1) * 1000:.2f} ms/片段")
+    print(f"  写入 {stats['documents']} 篇（共 {stats['chunks']} 个子块、{stats['parents']} 个父块），"
+          f"{stats['skipped']} 篇未变化已跳过，{stats['failed']} 篇失败")
+    per_chunk = f"，平均 {elapsed / stats['chunks'] * 1000:.2f} ms/片段" if stats["chunks"] else ""
+    print(f"  耗时 {elapsed:.1f}s{per_chunk}")
     icfg = cfg.get("index", {})
     if icfg.get("type") == "chroma":
         print(f"  已持久化到 {icfg.get('path', 'vector_store/chroma')}"
               f"（collection={icfg.get('collection', 'learn_rag_default')}）")
-        print(f"  BM25 倒排索引同样已落盘到 {persist}")
-    print("  后续评测加 --reuse-index 即可跳过向量化")
+    _print_verify(pipe.kb.verify())
+    print("  后续 ask 不必再传 --docs，评测加 --reuse-index 即可跳过向量化")
+    if stats["failed"]:
+        raise SystemExit(f"有 {stats['failed']} 篇文档写入失败，原因见上方日志；修复后重新运行 build 会续写，已写入的不会重复向量化")
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """核对已建好的知识库是否完整：文档片段是否齐全、父块是否存在、向量是否来自当前模型。"""
+    cfg = load_config(*_config_paths(args))
+    pipe = _build_system(args, cfg)
+    persist = _persist_dir(cfg)
+    if (Path(persist) / "meta.json").exists():
+        pipe.kb.load(persist)
+    report = pipe.kb.verify()
+    _print_verify(report)
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
+def _print_verify(report: dict) -> None:
+    counts = "　".join(f"{k}={report[k]}" for k in ("documents", "chunks", "bm25_chunks", "parents"))
+    if report["ok"]:
+        print(f"[完整性检查] 通过　{counts}")
+        return
+    print(f"[完整性检查] 发现 {len(report['problems'])} 个问题　{counts}")
+    for problem in report["problems"][:20]:
+        print(f"  - {problem}")
 
 
 def cmd_ls(_: argparse.Namespace) -> None:
@@ -279,6 +305,11 @@ def main() -> None:
     p_build.add_argument("--name")
     p_build.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"])
     p_build.set_defaults(func=cmd_build)
+
+    p_verify = sub.add_parser("verify", help="核对已建好的知识库是否完整")
+    p_verify.add_argument("--config", action="append", default=None)
+    p_verify.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"])
+    p_verify.set_defaults(func=cmd_verify)
 
     p_ls = sub.add_parser("ls", help="列出可用组件")
     p_ls.set_defaults(func=cmd_ls)

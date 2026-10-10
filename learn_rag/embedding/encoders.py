@@ -56,6 +56,9 @@ class HashingEncoder(TextEncoder):
         self.dimension = dimension
         self.use_ngrams, self.ngram = use_ngrams, ngram
 
+    def signature(self) -> str:
+        return f"hashing:dim={self.dimension},ngram={self.ngram if self.use_ngrams else 0}"
+
     def _features(self, text: str) -> list[str]:
         feats = index_tokens(text)
         if self.use_ngrams:
@@ -115,6 +118,9 @@ class OpenAICompatEncoder(TextEncoder):
         self.dimension = dimension
         self.batch_size = int(batch_size or os.getenv("EMBEDDING_BATCH_SIZE", "32"))
         self.timeout, self.max_retries = timeout, max_retries
+
+    def signature(self) -> str:
+        return f"openai_compat:{self.model}"
 
     def encode(self, texts: Sequence[str], *, is_query: bool = False) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -212,6 +218,11 @@ class SentenceTransformerEncoder(TextEncoder):
         self._model = SentenceTransformer(model_name, device=device)
         self.query_prefix, self.doc_prefix, self.batch_size = query_prefix, doc_prefix, batch_size
         self.dimension = int(self._model.get_sentence_embedding_dimension())
+        self.model_name = model_name
+
+    def signature(self) -> str:
+        # 文档前缀会改变存进索引的向量，查询前缀决定查询向量和文档向量是否可比，两者都算模型身份的一部分
+        return f"sentence_transformers:{self.model_name}|query={self.query_prefix}|doc={self.doc_prefix}"
 
     def encode(self, texts: Sequence[str], *, is_query: bool = False) -> list[list[float]]:
         prefix = self.query_prefix if is_query else self.doc_prefix
@@ -237,9 +248,12 @@ class CachingEncoder(TextEncoder):
         if self._path and self._path.exists():
             self._mem = json.loads(self._path.read_text(encoding="utf-8"))
 
-    @staticmethod
-    def _key(text: str, is_query: bool) -> str:
-        return hashlib.md5(f"{int(is_query)}|{text}".encode("utf-8")).hexdigest()
+    def signature(self) -> str:
+        return self.inner.signature()
+
+    def _key(self, text: str, is_query: bool) -> str:
+        # 键里带上模型身份：换了模型、缓存文件没换时，不会把旧模型的向量当成新模型的返回
+        return hashlib.md5(f"{self.signature()}|{int(is_query)}|{text}".encode("utf-8")).hexdigest()
 
     def encode(self, texts: Sequence[str], *, is_query: bool = False) -> list[list[float]]:
         keys = [self._key(t, is_query) for t in texts]

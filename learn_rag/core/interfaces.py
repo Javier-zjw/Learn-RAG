@@ -81,20 +81,40 @@ class TextEncoder(ABC):
     def encode_one(self, text: str, *, is_query: bool = False) -> list[float]:
         return self.encode([text], is_query=is_query)[0]
 
+    def signature(self) -> str:
+        """
+        模型身份：同一个索引里的向量必须来自同一个模型，否则查询向量和文档向量不可比，结果会莫名变差且不报错。
+
+        知识库把它写进每个子块的元数据，打开索引时逐一核对。默认用类名，实现应补上模型名等会改变向量的参数。
+        """
+        return type(self).__name__
+
 class VectorIndex(ABC):
     """
-    向量索引：只管"存向量"和"按向量找最近邻"
+    片段库：保存片段（正文、元数据、向量），并按向量找最近邻。
 
-    刻意不叫 FaissIndex/MilvusIndex —— 通用接口，实现可换
+    刻意不叫 FaissIndex/MilvusIndex —— 通用接口，实现可换。
+    它是知识库数据的唯一来源：BM25 倒排、父块和文档清单都从 chunks() 重建，
+    因此几份数据不会因为中途失败或多次建库而互相对不上。
     """
 
+    # 按 chunk_id 写入，已存在的覆盖。不给向量的片段（父块）只存储、不参与检索
     @abstractmethod
-    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Vector]) -> None: ...
+    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Vector] | None = None) -> None: ...
 
     # where 是可选的元数据过滤条件，实现可以忽略（返回全量近邻）
     @abstractmethod
     def search(self, vector: Vector, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]: ...
 
+    # 按 chunk_id 删除，不存在的 id 忽略
+    @abstractmethod
+    def delete(self, chunk_ids: Sequence[str]) -> None: ...
+
+    # 遍历全部片段（可检索的和只存储的），知识库打开时用它重建派生数据
+    @abstractmethod
+    def chunks(self) -> Iterable[Chunk]: ...
+
+    # 可检索（带向量）的片段数
     @abstractmethod
     def __len__(self) -> int: ...
 

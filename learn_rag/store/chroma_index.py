@@ -31,13 +31,14 @@ Chroma 用 PersistentClient 落盘，进程重启后 load() 直接复用，
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 from ..core.interfaces import VectorIndex
 from ..core.registry import registry
 from ..core.types import Chunk, ScoredChunk
+from .indexes import check_vectors
 
 
 @registry.register("index", "chroma")
@@ -49,6 +50,12 @@ class ChromaVectorIndex(VectorIndex):
       1. 保证"索引时"和"查询时"用的是同一个模型、同一套前缀；
       2. 换 embedding 模型时不必换向量库，两件事互相独立。
     把编码职责留在 encoder 层，是接口分工清晰的体现。
+
+    每个 collection 对应两个 Chroma 集合：
+      <collection>          可检索的片段（子块）：向量 + 正文 + 元数据
+      <collection>-stored   只存储的片段（父块）：正文 + 元数据
+    Chroma 的每条记录都必须带向量 —— 不传向量时它会自动调用内置模型（下载约 80 MB）现场生成，
+    而且维度和我们的向量对不上。所以父块单独放一个集合，写入一维的占位向量，这个集合从不参与检索。
     """
 
     def __init__(
@@ -70,16 +77,19 @@ class ChromaVectorIndex(VectorIndex):
 
         Path(path).mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=path)
+        stored_name = _safe_name(f"{self.collection_name}-stored")
         if reset:
             # 换了 embedding 模型或维度必须重建，否则新旧向量混在一起，
             # 查询结果会莫名其妙地差，而且**不报错** —— 极难排查的坑
-            try:
-                self._client.delete_collection(self.collection_name)
-            except Exception:
-                pass
+            for name in (self.collection_name, stored_name):
+                try:
+                    self._client.delete_collection(name)
+                except Exception:
+                    pass
 
         self._collection = self._client.get_or_create_collection(
             self.collection_name,
+            embedding_function=None,
             configuration={
                 "hnsw": {
                     "space": space,
@@ -89,26 +99,54 @@ class ChromaVectorIndex(VectorIndex):
                 }
             },
         )
-        # Chroma 只存 metadata（标量），chunk 的完整结构另存一份，
-        # 保证取回的 Chunk 和写入时完全一致
-        self._meta_path = Path(path) / f"{self.collection_name}_chunks.jsonl"
+        self._stored = self._client.get_or_create_collection(stored_name, embedding_function=None)
 
     # ------------------------------------------------------------------
-    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]] | None = None) -> None:
         if not chunks:
             return
+        # 同一批里重复的 id 以最后一次为准（Chroma 遇到一批里有重复 id 会直接报错）
+        latest = {c.chunk_id: i for i, c in enumerate(chunks)}
+        order = list(latest.values())
+        chunks = [chunks[i] for i in order]
+        if vectors is None:
+            target, embeddings = self._stored, [[1.0]] * len(chunks)   # 占位向量，见类注释
+        else:
+            arr = check_vectors(chunks, [vectors[i] for i in order], self._dimension())
+            target, embeddings = self._collection, arr.tolist()
         # 单次写入有上限（实测 5461），超了会报错，这里主动分批
         for i in range(0, len(chunks), self.batch_size):
-            batch, vecs = chunks[i : i + self.batch_size], vectors[i : i + self.batch_size]
-            self._collection.upsert(  # upsert 而不是 add：重复建库时幂等，不会报 id 冲突
+            batch = chunks[i : i + self.batch_size]
+            target.upsert(  # upsert 而不是 add：重复建库、续跑时幂等，不会报 id 冲突
                 ids=[c.chunk_id for c in batch],
-                embeddings=[list(map(float, v)) for v in vecs],
+                embeddings=embeddings[i : i + self.batch_size],
                 documents=[c.text for c in batch],
                 metadatas=[_flatten_meta(c) for c in batch],
             )
-        with self._meta_path.open("a", encoding="utf-8") as fh:
-            for c in chunks:
-                fh.write(json.dumps(c.__dict__, ensure_ascii=False) + "\n")
+
+    def delete(self, chunk_ids: Sequence[str]) -> None:
+        ids = list(dict.fromkeys(chunk_ids))
+        for i in range(0, len(ids), self.batch_size):
+            batch = ids[i : i + self.batch_size]
+            self._collection.delete(ids=batch)
+            self._stored.delete(ids=batch)
+
+    def chunks(self) -> Iterable[Chunk]:
+        """分页读出两个集合的全部片段，一次读太多会占满内存。"""
+        for collection in (self._collection, self._stored):
+            offset = 0
+            while True:
+                page = collection.get(include=["documents", "metadatas"], limit=_PAGE, offset=offset)
+                for cid, text, raw in zip(page["ids"], page["documents"], page["metadatas"]):
+                    yield _to_chunk(cid, text, raw)
+                if len(page["ids"]) < _PAGE:
+                    break
+                offset += _PAGE
+
+    def _dimension(self) -> int | None:
+        """已有向量的维度，空集合返回 None。写入前用它核对，比 Chroma 自己的报错多一句排查提示。"""
+        sample = self._collection.get(limit=1, include=["embeddings"])["embeddings"]
+        return len(sample[0]) if sample is not None and len(sample) else None
 
     # ------------------------------------------------------------------
     def search(
@@ -129,16 +167,9 @@ class ChromaVectorIndex(VectorIndex):
 
         hits: list[ScoredChunk] = []
         for cid, text, raw, dist in zip(ids, docs, metas, dists):
-            raw = dict(raw or {})
             hits.append(
                 ScoredChunk(
-                    chunk=Chunk(
-                        chunk_id=cid,
-                        doc_id=str(raw.get("doc_id", cid.split("#")[0])),
-                        text=text or "",
-                        position=int(raw.get("position", 0)),
-                        metadata=_restore_meta(raw),
-                    ),
+                    chunk=_to_chunk(cid, text, raw),
                     score=_to_score(dist, self.space),
                     source="vector",
                     debug={"distance": float(dist), "space": self.space},
@@ -158,7 +189,7 @@ class ChromaVectorIndex(VectorIndex):
         (Path(path) / "chroma_meta.json").write_text(
             json.dumps(
                 {"path": self.path, "collection": self.collection_name,
-                 "space": self.space, "count": len(self)},
+                 "space": self.space, "count": len(self), "stored": self._stored.count()},
                 ensure_ascii=False, indent=2),
             encoding="utf-8")
 
@@ -201,6 +232,19 @@ def _to_score(distance: float, space: str) -> float:
 
 # 完整元数据序列化后存放的字段名
 _FULL_META = "_metadata_json"
+# chunks() 每次从 Chroma 读取的条数
+_PAGE = 1000
+
+
+def _to_chunk(chunk_id: str, text: str | None, raw: dict[str, Any] | None) -> Chunk:
+    raw = dict(raw or {})
+    return Chunk(
+        chunk_id=chunk_id,
+        doc_id=str(raw.get("doc_id", chunk_id.split("#")[0])),
+        text=text or "",
+        position=int(raw.get("position", 0)),
+        metadata=_restore_meta(raw),
+    )
 
 
 def _flatten_meta(chunk: Chunk) -> dict[str, Any]:
