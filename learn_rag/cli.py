@@ -224,20 +224,20 @@ def cmd_build(args: argparse.Namespace) -> None:
     if icfg.get("type") == "chroma":
         print(f"  已持久化到 {icfg.get('path', 'vector_store/chroma')}"
               f"（collection={icfg.get('collection', 'learn_rag_default')}）")
-    _print_verify(pipe.kb.verify())
+    _print_verify(pipe.kb.verify(sample=10))
     print("  后续 ask 不必再传 --docs，评测加 --reuse-index 即可跳过向量化")
     if stats["failed"]:
         raise SystemExit(f"有 {stats['failed']} 篇文档写入失败，原因见上方日志；修复后重新运行 build 会续写，已写入的不会重复向量化")
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
-    """核对已建好的知识库是否完整：文档片段是否齐全、父块是否存在、向量是否来自当前模型。"""
+    """核对已建好的知识库是否完整：文档片段是否齐全、父块是否存在、向量是否来自当前模型，并抽样核对向量能否被正确检索。"""
     cfg = load_config(*_config_paths(args))
     pipe = _build_system(args, cfg)
     persist = _persist_dir(cfg)
     if (Path(persist) / "meta.json").exists():
         pipe.kb.load(persist)
-    report = pipe.kb.verify()
+    report = pipe.kb.verify(sample=args.sample)
     _print_verify(report)
     if not report["ok"]:
         raise SystemExit(1)
@@ -245,6 +245,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
 def _print_verify(report: dict) -> None:
     counts = "　".join(f"{k}={report[k]}" for k in ("documents", "chunks", "bm25_chunks", "parents"))
+    if report.get("sampled"):
+        counts += f"　抽样核对向量 {report['sampled']} 个"
     if report["ok"]:
         print(f"[完整性检查] 通过　{counts}")
         return
@@ -308,6 +310,8 @@ def main() -> None:
 
     p_verify = sub.add_parser("verify", help="核对已建好的知识库是否完整")
     p_verify.add_argument("--config", action="append", default=None)
+    p_verify.add_argument("--sample", type=int, default=20,
+                          help="抽样核对多少个子块的向量（会调用同样次数的 embedding），0 表示只做结构检查")
     p_verify.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"])
     p_verify.set_defaults(func=cmd_verify)
 

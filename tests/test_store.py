@@ -258,6 +258,35 @@ class _KnowledgeBaseCases:
         self.assertFalse(report["ok"])
         self.assertIn("其他模型", report["problems"][0])
 
+    def test_sampled_vectors_are_retrievable(self):
+        self._build([_doc(1), _doc(2)])
+        report = self._kb().verify(sample=100)
+        self.assertTrue(report["ok"], report["problems"])
+        self.assertEqual(report["sampled"], 100)
+
+    def test_detects_vector_stored_for_wrong_text(self):
+        """结构完全正常、只有某个子块的向量存成了别的正文的向量：只有抽样核对能发现。"""
+        self._build([_doc(1)])
+        kb = self._kb()
+        a, b = [c for c in kb.vector_index.chunks() if "embedding_model" in c.metadata][:2]
+        kb.vector_index.add([a], self.encoder.encode([b.text]))
+        kb.save(self.tmp + "/kb")
+        self.assertTrue(self._kb().verify()["ok"])
+        report = self._kb().verify(sample=1000)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any(a.chunk_id in p for p in report["problems"]))
+
+    def test_detects_encoder_change_hidden_behind_same_signature(self):
+        self._build([_doc(1)])
+
+        class Drifted(HashingEncoder):            # 模型身份没变，输出却变了（比如服务端悄悄换了模型）
+            def encode(self, texts, *, is_query=False):
+                return [list(reversed(v)) for v in super().encode(texts, is_query=is_query)]
+
+        report = self._kb(encoder=Drifted(dimension=64)).verify(sample=3)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("相似度只有" in p or "前 5 名里没有" in p for p in report["problems"]))
+
     def test_metadata_survives_storage(self):
         self._build([_doc(1)])
         expected = {c.chunk_id: c for c in self.chunker.split(_doc(1))}

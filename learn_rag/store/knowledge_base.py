@@ -260,13 +260,14 @@ class KnowledgeBase:
             "dimension": self.encoder.dimension
         }
 
-    def verify(self) -> dict[str, object]:
+    def verify(self, sample: int = 0) -> dict[str, object]:
         """
         全量核对片段库，返回 {"ok": 是否完整, "problems": [问题描述], 以及 stats() 的各项}。
 
         重新从片段库读取再核对，查的是落盘的数据而不是内存里的状态。检查：
         每篇文档的片段是否齐全且属于同一个版本、子块的父块是否存在、有没有没人引用的父块、
         向量是否来自当前模型、可检索的片段数是否等于子块数。
+        sample > 0 时再抽样核对向量本身（会调用 sample 次 embedding，见 _check_vectors）。
         """
         self._synced = False
         self._sync()
@@ -279,6 +280,8 @@ class KnowledgeBase:
                             "重新 build 一次会自动补齐，或清空索引后重建")
         else:
             problems += self._check_structure()
+            if sample:
+                problems += self._check_vectors(sample)
         other = self._models - {self.encoder.signature()}
         if other:
             problems.append(f"片段库里有其他模型生成的向量 {sorted(other)}，当前 encoder 是 {self.encoder.signature()}")
@@ -286,7 +289,37 @@ class KnowledgeBase:
             "documents": len(self._docs), "chunks": len(self.vector_index),
             "bm25_chunks": len(self._bm25), "parents": len(self._parents),
         }
-        return {"ok": not problems, "problems": problems, **stats}
+        return {"ok": not problems, "problems": problems, **stats, "sampled": sample if not legacy else 0}
+
+    def _check_vectors(self, sample: int) -> list[str]:
+        """
+        抽样核对向量：把子块的正文重新编码，用这个向量去检索，子块自己应该排第一、相似度接近 1。
+
+        一次检查同时覆盖两件事：存进去的向量和正文对得上（没存错、模型和编码方式没变），
+        以及索引能把它查出来（索引没损坏）。结构检查只看数量和引用，发现不了这两类问题。
+        样本在全部子块里等间隔抽取，结果可复现。正文完全相同的子块得分并列，谁排第一都算通过。
+        """
+        children = sorted((c for chunks in self._docs.values() for c in chunks.values() if _MODEL in c.metadata),
+                          key=lambda c: c.chunk_id)
+        picked = children[::max(1, len(children) // sample)][:sample]
+        if not picked:
+            return []
+        try:
+            vectors = self.encoder.encode([c.text for c in picked], is_query=False)
+        except Exception as exc:
+            return [f"抽样核对向量时 embedding 调用失败，未能核对：{exc}"]
+        problems: list[str] = []
+        for chunk, vector in zip(picked, vectors):
+            hits = self.vector_index.search(vector, 5)
+            mine = next((h for h in hits if h.chunk.chunk_id == chunk.chunk_id), None)
+            if mine is None:
+                problems.append(f"{chunk.chunk_id}：用它自己的正文检索，前 5 名里没有它，索引可能损坏或向量存错")
+            elif mine.score < hits[0].score - 1e-4:
+                problems.append(f"{chunk.chunk_id}：用它自己的正文检索只排第 {hits.index(mine) + 1} 位，向量可能存错")
+            elif mine.score < 0.99:
+                problems.append(f"{chunk.chunk_id}：存储的向量与重新计算的相似度只有 {mine.score:.3f}，"
+                                "向量可能存错，或者模型 / 编码方式变了但模型身份没变")
+        return problems
 
     def _check_structure(self) -> list[str]:
         """每篇文档片段齐全且属于同一个版本、子块的父块都在、没有孤立的父块、可检索片段数等于子块数。"""

@@ -88,7 +88,8 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **增量更新**：片段元数据里的 `doc_fingerprint`、`doc_chunks`、`embedding_model` 由知识库写入，用来跳过未变化的文档、发现写了一半的文档、拒绝混用模型。写入顺序固定为"子块 → 父块 → 删除旧版本多出的片段"，不能改成先删后写。
 - **模型身份**：`TextEncoder.signature()` 必须包含所有会改变向量的参数（模型名、前缀、维度等）；新增 encoder 时要实现它。
 - **Chroma 的坑**：每条记录都必须带向量，不传时它会调用内置模型下载并生成 384 维向量，所以父块放在 `<collection>-stored` 集合并写入一维占位向量；集合一律用 `embedding_function=None` 打开。
-- 改动存储逻辑后，用 `learn-rag build` 连续运行两次（第二次应全部跳过）并运行 `learn-rag verify` 确认。
+- 改动存储或向量化逻辑后，用 `learn-rag build` 连续运行两次（第二次应全部跳过），再运行 `learn-rag verify --sample <子块数>` 全量核对向量能否被正确检索。
+- 后续改进方向和顺序记录在 README“向量化与 Chroma 存储 → 后续改进”，在本分支（`feature/embedding-store`）上按顺序推进。
 
 ## 代码风格
 
