@@ -28,7 +28,7 @@ _KEYS = {
 # 可选依赖：(导入名, 用途, 安装命令)
 _PACKAGES = [
     ("chromadb", "Chroma 持久化向量库", 'pip install -e ".[chroma]"'),
-    ("fitz", "PDF 原生解析（PyMuPDF）", 'pip install -e ".[parsing]"'),
+    ("pymupdf", "PDF 原生解析（PyMuPDF）", 'pip install -e ".[parsing]"'),
     ("docx", "Word 解析（python-docx）", 'pip install -e ".[parsing]"'),
     ("pptx", "PPT 解析（python-pptx）", 'pip install -e ".[parsing]"'),
     ("openpyxl", "Excel 解析（openpyxl）", 'pip install -e ".[parsing]"'),

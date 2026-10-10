@@ -85,9 +85,9 @@ def _scan(file: Path, kind: str) -> dict[str, Any]:
 
 
 def _scan_pdf(file: Path) -> dict[str, Any]:
-    import fitz  # PyMuPDF，延迟导入
+    import pymupdf  # 延迟导入
 
-    with fitz.open(file) as doc:
+    with pymupdf.open(file) as doc:
         pages = doc.page_count
         step = max(1, pages // _PDF_SAMPLE_PAGES)
         sampled = list(range(0, pages, step))[:_PDF_SAMPLE_PAGES]
