@@ -7,6 +7,7 @@ learn_rag.cli —— 命令行入口。
     ask     一次问答（含证据展示）——「跑起来」
     eval    在数据集上评测       ——「量出来」
     ls      查看有哪些可用实现   ——「换得动」
+    serve   启动可视化建库页面   ——「点得到」
 
 用法示例：
     python -m learn_rag.cli ask   --config configs/default.yaml --corpus data/sample_corpus.jsonl -q "什么是RRF?"
@@ -28,7 +29,7 @@ from .core.registry import registry
 from .eval.datasets import BeirStyleDataset, HotpotQADataset, JsonlQADataset, SquadStyleDataset
 from .eval.metrics import LLMJudge, default_metrics
 from .ingest.loaders import JsonlSource
-from .parsing.assets import locate_asset
+from .parsing.assets import configured_assets_dirs, locate_asset
 from .parsing.source import FileSource
 from .pipeline.rag import RagPipeline
 
@@ -148,9 +149,7 @@ _ASSET_KINDS = {"image": "图片", "table": "表格截图"}
 
 
 def _asset_dirs(cfg: dict) -> list[str]:
-    """配置里各解析器的资产库目录（MinerU、Docling 可以各配一个）。"""
-    options = (cfg.get("parsing") or {}).get("options") or {}
-    return [o["assets_dir"] for o in options.values() if isinstance(o, dict) and o.get("assets_dir")]
+    return configured_assets_dirs(cfg.get("parsing"))
 
 
 def _provenance(meta: dict, asset_dirs: list[str]) -> list[str]:
@@ -268,6 +267,21 @@ def _print_verify(report: dict) -> None:
         print(f"  - {problem}")
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    """启动可视化建库服务：上传文件、选参数、建库、查看分块都在页面上完成。"""
+    try:
+        import uvicorn
+
+        from .server.app import create_app
+    except ImportError as exc:
+        raise SystemExit(f"启动页面服务需要 fastapi 和 uvicorn：pip install -e \".[web]\"（{exc}）") from None
+    app = create_app(args.data)
+    frontend = "已托管前端页面" if any(r.path == "/{path:path}" for r in app.routes) \
+        else "未找到 web/dist，先在 web/ 下运行 npm install && npm run build，开发时用 npm run dev"
+    print(f"[页面服务] http://{args.host}:{args.port}　数据目录 {args.data}　{frontend}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
 def cmd_ls(_: argparse.Namespace) -> None:
     from . import eval as _eval  # noqa: F401  触发指标/数据集注册
 
@@ -328,6 +342,12 @@ def main() -> None:
                           help="抽样核对多少个子块的向量（会调用同样次数的 embedding），0 表示只做结构检查")
     p_verify.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"])
     p_verify.set_defaults(func=cmd_verify)
+
+    p_serve = sub.add_parser("serve", help="启动可视化建库页面")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--data", default="data/web", help="知识库和上传文件的存放目录")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_ls = sub.add_parser("ls", help="列出可用组件")
     p_ls.set_defaults(func=cmd_ls)

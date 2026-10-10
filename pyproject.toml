@@ -31,6 +31,8 @@ parsing = [
 # 高精度解析工具（体积大，按需安装）
 mineru = ["mineru>=4.0,<5"]
 docling = ["docling>=2.0"]
+# 可视化建库页面的后端
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 all = [
     "python-dotenv>=1.0",
     "chromadb>=0.5",
@@ -42,6 +44,9 @@ all = [
 ]
 dev = [
     "pytest>=8.0",
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0",
     "chromadb>=0.5",
     "pymupdf>=1.24",
