@@ -26,7 +26,7 @@ from typing import Any
 from ..core.interfaces import DocumentParser
 from ..core.registry import registry
 from ..core.types import Element
-from .assets import mime_for, save_asset
+from .assets import mime_for, resolve_assets_dir, save_asset
 from .markdown import normalize_table
 
 logger = logging.getLogger(__name__)
@@ -75,12 +75,7 @@ class MinerUParser(DocumentParser):
         self.image_analysis = image_analysis
         self.raw_dir = Path(raw_dir) if raw_dir else None
         self.replay_dir = Path(replay_dir) if replay_dir else None
-        # 相对资产目录按项目根解析，避免从不同目录启动 CLI 时把图片写到别处。
-        if assets_dir is None:
-            self.assets_dir = None
-        else:
-            path = Path(assets_dir)
-            self.assets_dir = path if path.is_absolute() else _PROJECT_ROOT / path
+        self.assets_dir = resolve_assets_dir(assets_dir) if assets_dir else None
         # 模型权重默认放在项目内的 mineru_model_weight/（ModelScope 缓存根目录），
         # 不依赖运行机器的用户目录；.mineru.env 里设置了 MINERU_HOME 时以它为准
         default_home = _PROJECT_ROOT / "mineru_model_weight" if models_dir is None else Path(models_dir)
@@ -424,7 +419,7 @@ class DoclingParser(DocumentParser):
 
     def __init__(self, assets_dir: str | None = None) -> None:
         self._converter = None
-        self.assets_dir = assets_dir
+        self.assets_dir = str(resolve_assets_dir(assets_dir)) if assets_dir else None
 
     def parse(self, path: Path) -> list[Element]:
         if self._converter is None:

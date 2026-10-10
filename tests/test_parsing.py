@@ -962,7 +962,8 @@ class TestAssetStorage(unittest.TestCase):
             Element("image", "图1 总体架构", extra={"asset": "ab/abc.png", "sha256": "abc", "mime": "image/png"}),
         ], {"title": "手册"})
         chunks = StructureChunker(chunk_size=200).split(doc)
-        self.assertEqual(chunks[0].metadata["assets"], ["ab/abc.png"])
+        self.assertEqual(chunks[0].metadata["assets"],
+                         [{"asset": "ab/abc.png", "kind": "image", "caption": "图1 总体架构", "mime": "image/png"}])
 
 
 class TestEndToEnd(unittest.TestCase):

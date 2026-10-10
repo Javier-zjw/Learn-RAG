@@ -5,6 +5,9 @@ parsing.assets —— 图片资产的统一落盘。
 前两位分桶，同一张图（公司 logo、重复插图）不管出现在多少份文档里都只存一份。
 检索层永远只索引图注 / 描述文本，原图通过 Element.extra.asset（资产库内的
 相对路径）按需取回，两边各自演进、互不拖累。
+
+资产库目录写成相对路径时一律按项目根解析：解析器写入和命令行读取用的是同一条规则，
+从哪个目录启动程序都找得到同一张图。
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 _MIME_BY_SUFFIX = {
     ".png": "image/png",
@@ -44,3 +49,18 @@ def save_asset(data: bytes, assets_dir: str | Path, *, ext: str, mime: str = "")
 def mime_for(suffix: str) -> str:
     """按文件后缀猜 MIME 类型；未知类型给通用值，不猜空。"""
     return _MIME_BY_SUFFIX.get(suffix.lower(), "application/octet-stream")
+
+
+def resolve_assets_dir(assets_dir: str | Path) -> Path:
+    """资产库目录：绝对路径原样使用，相对路径按项目根解析。"""
+    path = Path(assets_dir)
+    return path if path.is_absolute() else _PROJECT_ROOT / path
+
+
+def locate_asset(asset: str, assets_dirs: list[str | Path]) -> Path | None:
+    """在若干资产库目录里找到一张图的文件（不同解析器可以配置不同的目录），找不到返回 None。"""
+    for assets_dir in assets_dirs:
+        path = resolve_assets_dir(assets_dir) / asset
+        if path.is_file():
+            return path
+    return None

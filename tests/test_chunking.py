@@ -236,7 +236,7 @@ class TestStructureChunker(unittest.TestCase):
         self.assertIn("按下式计算：", formula.text)
         image = next(c for c in children if "图 2 报销审批流程" in c.text)
         self.assertIn("四个环节流转", image.text)
-        self.assertEqual(image.metadata["assets"], ["ab/flow.png"])
+        self.assertEqual(image.metadata["assets"], [{"asset": "ab/flow.png", "kind": "image", "caption": "图 2 报销审批流程"}])
         listing = next(c for c in children if "16 GB" in c.text)
         self.assertIn("以下环境：", listing.text)
 
@@ -335,6 +335,100 @@ class TestParentExpansion(unittest.TestCase):
         self.assertEqual(len(result.contexts), 1)
         self.assertIn("一线城市每晚上限六百元", result.contexts[0].text)
         self.assertIn("expand", result.timings)
+
+
+class TestAssetEntries(unittest.TestCase):
+    """块元数据里的每张图：路径、类型、图注、页码、坐标，回答时能说清"见第几页图几"并取回原图。"""
+
+    def test_entries_carry_caption_page_and_bbox(self):
+        doc = _doc([
+            Element("heading", "分析", level=1),
+            Element("text", "各区域营收如图 1 所示。", page=2),
+            Element("image", "2025年各区域季度营收\n图 1 2025 年各区域季度营收", page=2, bbox=[0.2, 0.5, 0.8, 0.7],
+                    extra={"asset": "9f/chart.jpg", "mime": "image/jpeg"}),
+            Element("image", "[图片]", page=3, extra={"asset": "ae/trend.png"}),
+            Element("table", "表 1 价格\n| 版本 | 月费 |\n| --- | --- |\n| 基础版 | 999 |\n注：含税。", page=3,
+                    extra={"asset": "01/table.jpg"}),
+        ])
+        assets = StructureChunker().split(doc)[0].metadata["assets"]
+        self.assertEqual(assets, [
+            {"asset": "9f/chart.jpg", "kind": "image", "caption": "2025年各区域季度营收 图 1 2025 年各区域季度营收",
+             "page": 2, "bbox": [0.2, 0.5, 0.8, 0.7], "mime": "image/jpeg"},
+            {"asset": "ae/trend.png", "kind": "image", "page": 3},          # 占位文字不算图注
+            {"asset": "01/table.jpg", "kind": "table", "caption": "表 1 价格", "page": 3},   # 表格只取表题
+        ])
+
+    def test_split_table_records_its_screenshot_once_per_chunk(self):
+        rows = [["型号", "价格"]] + [[f"M{i}", str(i)] for i in range(60)]
+        table = Element("table", "表 2 报价\n" + table_to_markdown(rows), page=5, extra={"asset": "01/t.jpg"})
+        chunks = StructureChunker(chunk_size=80, parent_size=400).split(_doc([Element("heading", "价格", level=1), table]))
+        self.assertGreater(len(chunks), 3)
+        for chunk in chunks:
+            self.assertEqual(chunk.metadata["assets"], [{"asset": "01/t.jpg", "kind": "table", "caption": "表 2 报价", "page": 5}])
+
+    def test_chroma_knowledge_base_keeps_assets_and_parents(self):
+        """Chroma 建库 -> 落盘 -> 另起一个知识库加载 -> 召回子块并展开成父块，资产信息一路不丢。"""
+        try:
+            from learn_rag.store.chroma_index import ChromaVectorIndex
+        except ImportError:
+            self.skipTest("未安装 chromadb")
+        para = "平台内置的报表模块可以直接生成区域营收对比图，数据每天凌晨更新一次。"
+        doc = _doc([
+            Element("heading", "数据分析", level=1),
+            Element("text", para * 2, page=1),
+            Element("text", "各区域季度营收如图 1 所示。", page=2),
+            Element("image", "图 1 各区域季度营收对比", page=2, extra={"asset": "d9/chart.png"}),
+            Element("text", para * 2, page=2),
+        ])
+        chunker = StructureChunker(chunk_size=60, parent_size=400)
+        with tempfile.TemporaryDirectory() as tmp:
+            kb = KnowledgeBase(HashingEncoder(dimension=128), chunker,
+                               vector_index=ChromaVectorIndex(path=tmp, collection="kb_assets", reset=True))
+            kb.add([doc])
+            kb.save(tmp + "/kb")
+            fresh = KnowledgeBase(HashingEncoder(dimension=128), chunker,
+                                  vector_index=ChromaVectorIndex(path=tmp, collection="kb_assets"))
+            fresh.load(tmp + "/kb")
+            query = fresh.encoder.encode_one("各区域季度营收对比图", is_query=True)
+            hits = fresh.vector_index.search(query, 3)
+            expanded = fresh.expand(hits)
+        child = next(h for h in hits if "图 1" in h.text)
+        self.assertEqual(child.chunk.metadata["assets"], [{"asset": "d9/chart.png", "kind": "image",
+                                                            "caption": "图 1 各区域季度营收对比", "page": 2}])
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0].chunk.metadata["assets"], child.chunk.metadata["assets"])
+        self.assertEqual((expanded[0].chunk.metadata["page_start"], expanded[0].chunk.metadata["page_end"]), (1, 2))
+
+
+class TestProvenance(unittest.TestCase):
+    """命令行展示的出处：页码、章节和每张图的本地文件。"""
+
+    def test_lists_pages_and_resolves_asset_files(self):
+        from learn_rag.cli import _provenance
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "9f").mkdir()
+            (Path(tmp) / "9f" / "chart.jpg").write_bytes(b"jpg")
+            meta = {"page_start": 2, "page_end": 3, "section": "年报 > 2 区域经营数据", "assets": [
+                {"asset": "9f/chart.jpg", "kind": "image", "caption": "图 1 区域营收", "page": 2},
+                {"asset": "ae/missing.png", "kind": "table", "page": 3},
+            ]}
+            lines = _provenance(meta, ["/nonexistent", tmp])
+        self.assertEqual(lines[0], "出处：第 2-3 页　年报 > 2 区域经营数据")
+        self.assertEqual(lines[1], f"图片：第 2 页 「图 1 区域营收」 → {Path(tmp) / '9f' / 'chart.jpg'}")
+        self.assertEqual(lines[2], "表格截图：第 3 页 （无图注） → ae/missing.png（资产库中未找到）")
+
+    def test_ask_refuses_empty_index(self):
+        from learn_rag.cli import _load_index
+        from learn_rag.core.config import load_config
+        from learn_rag.pipeline.rag import RagPipeline
+
+        cfg = load_config("configs/default.yaml")
+        pipe = RagPipeline.from_config(cfg)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["index"] = {"type": "flat", "path": tmp}   # 落盘目录下什么都没有
+            with self.assertRaises(SystemExit):
+                _load_index(pipe, cfg)
 
 
 if __name__ == "__main__":

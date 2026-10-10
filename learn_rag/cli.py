@@ -26,6 +26,7 @@ from .core.registry import registry
 from .eval.datasets import BeirStyleDataset, HotpotQADataset, JsonlQADataset, SquadStyleDataset
 from .eval.metrics import LLMJudge, default_metrics
 from .ingest.loaders import JsonlSource
+from .parsing.assets import locate_asset
 from .parsing.source import FileSource
 from .pipeline.rag import RagPipeline
 
@@ -91,6 +92,8 @@ def cmd_ask(args: argparse.Namespace) -> None:
     if args.corpus or args.docs:
         stats = pipe.index(_load_documents(args, cfg))
         print(f"[索引] {stats}")
+    else:
+        _load_index(pipe, cfg)
     result = pipe.answer(args.question)
     if result.extras.get("mode") == "wiki":
         print(f"\n===== Wiki 状态 =====")
@@ -104,10 +107,54 @@ def cmd_ask(args: argparse.Namespace) -> None:
     print("\n===== 答案 =====")
     print(result.answer.text)
     print("\n===== 证据 =====")
+    asset_dirs = _asset_dirs(cfg)
     for i, ctx in enumerate(result.contexts, 1):
         title = ctx.chunk.metadata.get("title", ctx.doc_id)
         print(f"[{i}] ({ctx.score:.4f} · {ctx.source} · {title}) {ctx.text[:120]}...")
+        for line in _provenance(ctx.chunk.metadata, asset_dirs):
+            print(f"     {line}")
     print(f"\n耗时：{ {k: round(v, 3) for k, v in result.timings.items()} }")
+
+
+def _load_index(pipe: RagPipeline, cfg: dict) -> None:
+    """
+    没有现场建索引时，加载 build 落盘的索引。
+
+    向量（Chroma）本身是持久化的，不加载也能查到，但 BM25 和父块只在这里读回来：
+    漏掉这一步，混合检索会静默退化成纯向量，命中的子块也换不成父块，而且不报错。
+    """
+    persist = _persist_dir(cfg)
+    if (Path(persist) / "meta.json").exists():
+        pipe.kb.load(persist)
+        print(f"[复用索引] {persist} → " + "　".join(f"{k}={v}" for k, v in pipe.kb.stats().items()))
+    if not len(pipe.kb.vector_index):
+        raise SystemExit(f"索引为空：没有找到 {persist}。先运行 build 建库，或用 --docs / --corpus 现场建索引")
+
+
+_ASSET_KINDS = {"image": "图片", "table": "表格截图"}
+
+
+def _asset_dirs(cfg: dict) -> list[str]:
+    """配置里各解析器的资产库目录（MinerU、Docling 可以各配一个）。"""
+    options = (cfg.get("parsing") or {}).get("options") or {}
+    return [o["assets_dir"] for o in options.values() if isinstance(o, dict) and o.get("assets_dir")]
+
+
+def _provenance(meta: dict, asset_dirs: list[str]) -> list[str]:
+    """证据的出处：页码、章节，以及块里每张图的图注和本地文件路径。"""
+    lines = []
+    start, end = meta.get("page_start"), meta.get("page_end")
+    pages = f"第 {start} 页" if start == end else f"第 {start}-{end} 页"
+    where = "　".join(x for x in (pages if start else "", meta.get("section", "")) if x)
+    if where:
+        lines.append(f"出处：{where}")
+    for entry in meta.get("assets") or []:
+        kind = _ASSET_KINDS.get(entry.get("kind"), entry.get("kind", "资产"))
+        page = f"第 {entry['page']} 页 " if entry.get("page") else ""
+        caption = f"「{entry['caption']}」" if entry.get("caption") else "（无图注）"
+        found = locate_asset(entry["asset"], asset_dirs)
+        lines.append(f"{kind}：{page}{caption} → {found or entry['asset'] + '（资产库中未找到）'}")
+    return lines
 
 
 def cmd_eval(args: argparse.Namespace) -> None:

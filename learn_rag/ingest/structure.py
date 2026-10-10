@@ -20,7 +20,8 @@ ingest.structure —— 结构感知的父子分块。
      这类指代在子块边界处导致漏召回时再打开。父块不重叠，它交给大模型，重复内容只会浪费上下文。
 
 子块的 metadata.parent_id 指向父块。父块和子块都从 split() 返回，由知识库决定谁进索引、谁只存储。
-每个块都记录章节路径、页码范围、元素类型和图片资产，回答时可以溯源到页、取回原图。
+每个块都记录章节路径、页码范围、元素类型和图片资产（每张图的路径、图注、页码、坐标），
+回答时可以溯源到页、取回原图。
 没有解析结构的纯文本（如 jsonl 语料）按空行分段后走同一套规则，调用方无需区分。
 """
 
@@ -199,8 +200,48 @@ def _describe(path: list[str], group: list[Element]) -> dict[str, object]:
     pages = [p for e in group for p in (e.page, e.extra.get("page_end")) if p]
     if pages:
         meta["page_start"], meta["page_end"] = min(pages), max(pages)
-    # 资产库里的相对路径跟着块走：图片、图表和表格截图都能按 ID 取回原图
-    assets = [e.extra["asset"] for e in group if e.extra.get("asset")]
+    assets = _assets(group)
     if assets:
         meta["assets"] = assets
     return meta
+
+
+# 解析器在没有图注和描述时填的占位文字，不算图注
+_PLACEHOLDERS = {"[图片]", "[图表]"}
+_CAPTION_LIMIT = 200
+
+
+def _assets(group: list[Element]) -> list[dict[str, object]]:
+    """
+    块内的图片、图表和表格截图，每张一条：资产库路径、元素类型、图注、页码、坐标、MIME 类型。
+
+    只记路径的话，一个父块里有两张图就分不清哪张是"图 1"，也没法在原文上标出位置。
+    超长表格切成几片后每片都带着同一张截图，同一个块里只记一次。
+    """
+    entries: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for element in group:
+        asset = element.extra.get("asset")
+        if not asset or asset in seen:
+            continue
+        seen.add(asset)
+        entry = {
+            "asset": asset,
+            "kind": element.kind,
+            "caption": _caption(element),
+            "page": element.page,
+            "bbox": element.bbox,
+            "mime": element.extra.get("mime"),
+        }
+        entries.append({key: value for key, value in entry.items() if value not in (None, "")})
+    return entries
+
+
+def _caption(element: Element) -> str:
+    """图片取全部文字（图注和模型描述）；表格只取表格前面的表题，表格内容本身不是图注。"""
+    lines = [line.strip() for line in element.text.splitlines()]
+    if element.kind == "table":
+        end = next((i for i, line in enumerate(lines) if line.startswith(("|", "<table"))), len(lines))
+        lines = lines[:end]
+    caption = " ".join(line for line in lines if line and line not in _PLACEHOLDERS)
+    return caption[:_CAPTION_LIMIT]

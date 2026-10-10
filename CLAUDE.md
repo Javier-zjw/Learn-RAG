@@ -78,6 +78,8 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **大小按 token 估算**：一律用 `core/text.py` 的 `count_tokens`，不要用 `len()`；它向上取整，装箱时相加不会超出预算。
 - **展开放在精排之后**：精排在短小的子块上做，再展开、去重、取 `top_k`；不生成父块的切分器不受影响，管线里不为它写分支。
 - 父块保存在索引目录的 `parents.jsonl`，改动知识库持久化时三者（向量、BM25、父块）要一起落盘和加载。
+- **图片资产**：块元数据 `assets` 是条目列表（`asset`、`kind`、`caption`、`page`、`bbox`、`mime`，没有的字段不写），由 `_describe` 从元素的 `extra.asset` 汇总，同一块内按路径去重。资产库目录的相对路径一律用 `parsing/assets.py` 的 `resolve_assets_dir` 按项目根解析。
+- **元数据不能在存储层走样**：向量库只能存标量时，完整元数据序列化成 JSON 一起存、取回时还原（见 `chroma_index.py`），不要拼接或截断列表。
 - 改切分规则后用 `export_parsed.py --replay` 重新生成 `samples/parsing_results/`，对照 `chunks.jsonl` 检查效果。
 
 ## 代码风格

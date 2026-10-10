@@ -97,9 +97,30 @@
 
 - **大小按 token 估算**（`core/text.py` 的 `count_tokens`）：中文每字约 1 个，英文每词约 1.3 个，中英文混排时块大小一致；只计正文，不计块首路径。
 - **检索流程**：召回和精排都在子块上做（短而集中，交叉编码器打分更准、不会被截断），之后 `KnowledgeBase.expand` 把子块换成父块，同一父块下的多个子块合并为一条，取够 `top_k` 个不同的上下文；命中了哪些子块记在 `debug["children"]` 中。切分器不生成父块时这一步不改变任何结果。
-- **图片和图表**：图片二进制存在内容寻址资产库，图注 / 模型描述随所在小节进入子块，资产路径汇总到块元数据的 `assets` 字段；原生图表（PPT / Excel）由 MinerU 转成数据表，按表格切分。
+- **图片和图表**：图片二进制存在内容寻址资产库，图注 / 模型描述随所在小节进入子块，向量和 BM25 索引的是这些文字，图片本身不向量化；原生图表（PPT / Excel）由 MinerU 转成数据表，按表格切分。块内每张图在元数据 `assets` 中记一条（见下方示例），超长表格切成几片时每片都带着同一张表格截图。
 - **持久化**：父块保存在索引目录的 `parents.jsonl` 中，`build` 后 `--reuse-index` 复用时同样可以展开。
 - **溯源**：每个块记录 `section`（章节路径）、`page_start` / `page_end`、`kinds`（包含的元素类型）、`assets`，子块记录 `parent_id`。
+
+块的元数据示例（年度报告第 2 章的父块）：
+
+```json
+{
+  "title": "01_年度报告_双栏复杂版面", "path": "samples/parsing/01_年度报告_双栏复杂版面.pdf",
+  "file_type": "pdf", "file_hash": "a4b2a402…", "parser": "mineru", "doc_id": "01_年度报告_双栏复杂版面.pdf",
+  "section": "星河科技 2025 年度经营报告 > 2 区域经营数据",
+  "kinds": ["formula", "image", "table", "text"], "page_start": 2, "page_end": 3,
+  "assets": [
+    {"asset": "01/01b178….jpg", "kind": "table", "caption": "表 1 2025 年各区域季度营收", "page": 2,
+     "bbox": [0.118, 0.165, 0.878, 0.325], "mime": "image/jpeg"},
+    {"asset": "9f/9f04a9….jpg", "kind": "image", "caption": "2025年各区域季度营收 图 1 2025 年各区域季度营收",
+     "page": 2, "bbox": [0.246, 0.499, 0.754, 0.713], "mime": "image/jpeg"}
+  ]
+}
+```
+
+`assets` 的每一条：`asset` 是资产库内的相对路径；`kind` 为 `image`（图片、图表）或 `table`（表格截图）；`caption` 是图注和模型描述（表格只取表题，`[图片]` 这类占位文字不算）；`page`、`bbox` 沿用解析器给出的页码和坐标（MinerU 为 0～1 的相对坐标）。没有的字段不写。
+- **元数据完整落盘**：flat 索引原样保存；Chroma 的元数据只接受字符串和数字，标量字段原样存入供 `where` 过滤，完整元数据另存为一个 JSON 字段，取回时原样还原（旧版本建的集合仍可读取）。
+- **问答时展示出处**：`ask` 的每条证据下方列出页码、章节，以及块内每张图的图注和本地文件路径（在配置的 `assets_dir` 中查找）。
 
 ```yaml
 chunker:
@@ -283,8 +304,18 @@ python -m learn_rag.cli eval --config configs/models_env.yaml --config configs/d
 pip install -e ".[parsing]"
 python -m learn_rag.cli ask --config configs/parsing.yaml --docs path/to/docs -q "差旅住宿标准是多少？"
 
-# 离线建库并持久化
+# 离线建库并持久化，之后问答不必再传 --docs：ask 会加载落盘的 BM25 索引和父块
 python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chroma.yaml --docs path/to/docs
+python -m learn_rag.cli ask --config configs/parsing.yaml --config configs/chroma.yaml -q "差旅住宿标准是多少？"
+```
+
+每条证据下方会列出出处，例如：
+
+```
+[2] (0.7262 · rerank:lexical · 01_年度报告_双栏复杂版面) [01_年度报告_双栏复杂版面 > … > 2 区域经营数据] …
+     出处：第 2-3 页　星河科技 2025 年度经营报告 > 2 区域经营数据
+     表格截图：第 2 页 「表 1 2025 年各区域季度营收」 → /…/.cache/assets/01/01b178….jpg
+     图片：第 2 页 「2025年各区域季度营收 图 1 2025 年各区域季度营收」 → /…/.cache/assets/9f/9f04a9….jpg
 ```
 
 扫描件和图片需要配置 OCR 模型（`.env` 中的 `OCR_BASE_URL` / `OCR_API_KEY` / `OCR_MODEL`，并在 `configs/parsing.yaml` 中打开 `ocr`）。
@@ -409,7 +440,7 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
 | `image_analysis` | `true` | 设为 `false` 时追加 `--disable-image-analysis` |
 | `vlm_server_url` | `http://127.0.0.1:30000` | llama.cpp VLM 服务地址 |
 | `models_dir` | `mineru_model_weight` | 模型权重目录，相对路径按项目根目录解析 |
-| `assets_dir` | 不保存 | 图片资产库目录，`parsing.yaml` 中设为 `.cache/assets`，相对路径按项目根目录解析 |
+| `assets_dir` | 不保存 | 图片资产库目录，`parsing.yaml` 中设为 `.cache/assets`，相对路径按项目根目录解析（Docling 同样如此） |
 | `command` | `mineru-kit` | MinerU 命令行名称或绝对路径 |
 | `timeout` | `1800` | 单个文件的解析超时（秒） |
 | `raw_dir` | 不保存 | 另存 MinerU 原始结果 zip 的目录，用于排查 |
@@ -441,7 +472,7 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
   （样例中真正跨页的句子没有标，扫描件里印章和下一页的条款反而被标成了一段），所以正文按版面几何判断：
   上一块不以句末标点结尾，并且以逗号、顿号结尾或写满了所在栏的宽度时，与下一块（同页下方或下一页开头）合并，记录结束页码 `page_end`。
   只作用于带坐标的 PDF 和图片；跨页续表仍按 `continues_prev` 合并，续页重复的表头会去掉。
-- 图片按内容的 SHA-256 命名，同一张图只存一份。`Element.extra` 中记录 `asset`（资产库内相对路径）、`sha256` 和 `mime`，切分后汇总到块元数据的 `assets` 字段，回答时可以取回原图。
+- 图片按内容的 SHA-256 命名，同一张图只存一份。`Element.extra` 中记录 `asset`（资产库内相对路径）、`sha256` 和 `mime`，切分后汇总到块元数据的 `assets` 字段（每张图带图注、页码和坐标），回答时可以取回原图。
 - zip 中的图片路径会做安全检查，不存在或路径不安全的图片只保留文字，不影响整份文档。
 - **回放**：`export_parsed.py --replay <目录>`（即配置 `replay_dir`）直接读取之前用 `--raw` 保存的 MinerU 结果，
   修改适配器后几秒内就能在真实输出上重新验证，不必重跑 MinerU。
