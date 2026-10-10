@@ -1,0 +1,221 @@
+/* 设计令牌：中性灰 + 一种主色。深色模式跟随系统（App.vue 给 <html> 加 .dark） */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f2f3f5;
+  --border: #e4e6eb;
+  --border-strong: #d0d4db;
+  --text: #1f2329;
+  --text-2: #4e5969;
+  --text-3: #86909c;
+  --primary: #3056d3;
+  --success: #2f9e6b;
+  --danger: #d4483b;
+  --warning: #c98a1a;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px rgba(15, 23, 42, 0.05);
+  --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 10px 28px rgba(15, 23, 42, 0.09);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  /* 分块底色：低饱和浅色，正文深灰字的对比度都在 12:1 以上 */
+  --c0: #e8f0ff; --c0-line: #c3d4fa;
+  --c1: #e5f5eb; --c1-line: #bfe2cc;
+  --c2: #fff0de; --c2-line: #f2d2a8;
+  --c3: #f0eaff; --c3-line: #d6c8f7;
+  --c4: #e2f4f5; --c4-line: #b9e0e3;
+  --c5: #fdeaee; --c5-line: #f3c3cf;
+  --parent-bar: #c5cad3;
+
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--primary) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--primary) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--primary) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--primary) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--primary) 10%, white);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--primary) 80%, black);
+  --el-border-radius-base: 8px;
+  --el-font-family: inherit;
+}
+
+html.dark {
+  --bg: #121316;
+  --surface: #1a1b1f;
+  --surface-2: #222328;
+  --border: #2b2d33;
+  --border-strong: #3a3d45;
+  --text: #e6e8eb;
+  --text-2: #b4b9c2;
+  --text-3: #7f8792;
+  --primary: #6585f5;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-hover: 0 4px 18px rgba(0, 0, 0, 0.45);
+
+  --c0: #1d2840; --c0-line: #31466f;
+  --c1: #1b3026; --c1-line: #2d5141;
+  --c2: #37291a; --c2-line: #5b4427;
+  --c3: #2a2340; --c3-line: #46396b;
+  --c4: #1a3034; --c4-line: #2b4f55;
+  --c5: #382028; --c5-line: #5b3441;
+  --parent-bar: #4a4e57;
+
+  --el-color-primary-light-3: color-mix(in srgb, var(--primary) 70%, black);
+  --el-color-primary-light-5: color-mix(in srgb, var(--primary) 50%, black);
+  --el-color-primary-light-7: color-mix(in srgb, var(--primary) 30%, black);
+  --el-color-primary-light-8: color-mix(in srgb, var(--primary) 20%, black);
+  --el-color-primary-light-9: color-mix(in srgb, var(--primary) 10%, black);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--primary) 80%, white);
+  --el-bg-color: var(--surface);
+  --el-bg-color-overlay: var(--surface-2);
+  --el-border-color: var(--border-strong);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-fill-color-blank: var(--surface);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--primary); text-decoration: none; }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+
+code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+
+/* ---------------------------------------------------------------- 通用布局 */
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px 48px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.page-head h1 { font-size: 22px; }
+.page-head .sub { color: var(--text-3); margin-top: 4px; font-size: 13px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-head h3 { font-size: 15px; }
+.card-body { padding: 18px; }
+
+.muted { color: var(--text-3); }
+.hint { color: var(--text-3); font-size: 12px; line-height: 1.5; }
+
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font: 600 10.5px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.type-pdf { background: #fdecea; color: #b8382c; }
+.type-word { background: #e7efff; color: #2a52be; }
+.type-excel { background: #e3f4ea; color: #23784e; }
+.type-ppt { background: #fff0e2; color: #b55e12; }
+.type-text { background: #eef0f3; color: #4e5969; }
+.type-web { background: #e5f4f6; color: #1f7380; }
+.type-image { background: #f2ecff; color: #6a43c2; }
+.type-other { background: #eef0f3; color: #86909c; }
+html.dark .type-pdf { background: #3a1f1d; color: #f19a90; }
+html.dark .type-word { background: #1d2842; color: #93b0f5; }
+html.dark .type-excel { background: #1a3227; color: #85d1a8; }
+html.dark .type-ppt { background: #3a2a1a; color: #f0b27a; }
+html.dark .type-text, html.dark .type-other { background: #2a2c31; color: #a9afb9; }
+html.dark .type-web { background: #183236; color: #7fcbd6; }
+html.dark .type-image { background: #2b2340; color: #b9a1f2; }
+
+/* ---------------------------------------------------------------- 动画 */
+.page-enter-active, .page-leave-active { transition: opacity 0.2s var(--ease), transform 0.2s var(--ease); }
+.page-enter-from { opacity: 0; transform: translateY(8px); }
+.page-leave-to { opacity: 0; transform: translateY(-4px); }
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.18s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+.list-enter-active, .list-leave-active { transition: opacity 0.24s var(--ease), transform 0.24s var(--ease); }
+.list-enter-from { opacity: 0; transform: translateY(-6px); }
+.list-leave-to { opacity: 0; transform: translateX(12px); }
+.list-leave-active { position: absolute; width: 100%; }
+.list-move { transition: transform 0.24s var(--ease); }
+
+.slide-enter-active, .slide-leave-active { transition: opacity 0.22s var(--ease), transform 0.22s var(--ease); }
+.slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-8px); }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 0.36s var(--ease) both; animation-delay: calc(var(--i, 0) * 30ms); }
+
+@keyframes flash {
+  0%, 30% { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+  100% { background: transparent; }
+}
+.flash { animation: flash 1.6s ease; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------- Markdown 正文 */
+.md { word-break: break-word; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 0.6em; }
+.md ul, .md ol { margin: 0 0 0.6em; padding-left: 1.4em; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-size: 14px; margin: 0.4em 0; }
+.md table { border-collapse: collapse; margin: 0.3em 0 0.6em; font-size: 13px; background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.md th, .md td { border: 1px solid var(--border-strong); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md th { font-weight: 600; background: color-mix(in srgb, var(--surface) 40%, transparent); }
+.md pre { margin: 0.3em 0 0.6em; padding: 10px 12px; border-radius: 6px; overflow-x: auto; background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.md code { background: color-mix(in srgb, var(--surface) 60%, transparent); padding: 1px 4px; border-radius: 4px; }
+.md pre code { background: none; padding: 0; }
+.md img { max-width: 100%; }
+.md blockquote { margin: 0 0 0.6em; padding-left: 10px; border-left: 3px solid var(--border-strong); color: var(--text-2); }
+
+/* Element Plus 细节 */
+.el-button { font-weight: 500; }
+.el-card { --el-card-border-radius: var(--radius); }
+.el-table { --el-table-header-bg-color: var(--surface-2); --el-table-bg-color: var(--surface); --el-table-tr-bg-color: var(--surface); }
+.el-table th.el-table__cell { font-weight: 600; color: var(--text-2); }
