@@ -5,8 +5,13 @@
 #   python -m learn_rag.cli eval  --config configs/chroma.yaml --reuse-index \
 #       --dataset jsonl --qa data/sample_qa.jsonl
 #
-# 换了 embedding 模型或维度后，务必把 reset 临时改成 true 重建一次，
-# 否则新旧向量混在一起，结果会莫名其妙地差，而且**不报错**。
+# build 可以重复运行：未变化的文档跳过（不重新向量化），修改过的文档替换旧版本，中断后续写。
+# 结束时自动核对完整性，也可以单独运行 verify 子命令。
+#
+# 以下情况需要把 reset 临时改成 true 重建一次：
+#   - 换了 embedding 模型（不重建时知识库会报错，拒绝把两个模型的向量混在一起）；
+#   - 改了切分代码本身（参数变化会被自动识别，代码变化不会）；
+#   - 从文档目录里删除了文件（它们的片段不会自动从库里删掉）。
 
 index:
   type: chroma
@@ -16,4 +21,4 @@ index:
   ef_construction: 200           # 建图质量：越大图越好、建库越慢
   max_neighbors: 32              # HNSW 的 M：每个节点的连接数
   ef_search: 100                 # 查询宽度：唯一能在线调的参数，调大→召回升、延迟升
-  reset: false                   # true = 建库前清空该 collection
+  reset: false                   # true = 建库前清空该 collection（连同存放父块的 <collection>-stored）

@@ -53,7 +53,7 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **依赖注入靠参数名**：`registry.build` 只会注入工厂签名里声明的同名参数（如 `llm`、`kb`、`inner`、`channels`）。
 - **可选依赖延迟导入**：chromadb、sentence-transformers、python-dotenv 在用到时才 import，未安装时不能影响其他功能，报错需给出安装提示。
 - **外部服务调用**要有超时、有限次重试和降级路径（参考 `ApiReranker` 失败时退回召回顺序），不能让一个组件失败拖垮整条链路。
-- **评测不能自欺**：缺少标注的指标要跳过而不是记 0；持久化目录按 collection 隔离；BM25 索引与向量索引必须同时落盘。
+- **评测不能自欺**：缺少标注的指标要跳过而不是记 0；持久化目录按 collection 隔离；BM25 等派生索引必须和片段库是同一批片段（从片段库重建，不单独落盘）。
 - **配置**：密钥只通过环境变量 / `.env` 注入（YAML 中用 `${VAR}` 或 `${VAR:-默认值}`），绝不写进提交的配置文件。
 
 ## 文档解析模块（`learn_rag/parsing/`）
@@ -77,10 +77,18 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - **句子重叠默认关闭**（`overlap_sentences`）：只作用于同一长段落切出的相邻子块，不跨元素，表格和父块不重叠；重叠不能让块超出预算。
 - **大小按 token 估算**：一律用 `core/text.py` 的 `count_tokens`，不要用 `len()`；它向上取整，装箱时相加不会超出预算。
 - **展开放在精排之后**：精排在短小的子块上做，再展开、去重、取 `top_k`；不生成父块的切分器不受影响，管线里不为它写分支。
-- 父块保存在索引目录的 `parents.jsonl`，改动知识库持久化时三者（向量、BM25、父块）要一起落盘和加载。
 - **图片资产**：块元数据 `assets` 是条目列表（`asset`、`kind`、`caption`、`page`、`bbox`、`mime`，没有的字段不写），由 `_describe` 从元素的 `extra.asset` 汇总，同一块内按路径去重。资产库目录的相对路径一律用 `parsing/assets.py` 的 `resolve_assets_dir` 按项目根解析。
 - **元数据不能在存储层走样**：向量库只能存标量时，完整元数据序列化成 JSON 一起存、取回时还原（见 `chroma_index.py`），不要拼接或截断列表。
 - 改切分规则后用 `export_parsed.py --replay` 重新生成 `samples/parsing_results/`，对照 `chunks.jsonl` 检查效果。
+
+## 向量化与存储（`learn_rag/store/`）
+
+- **片段库是唯一的数据来源**：`VectorIndex` 保存子块（向量 + 正文 + 元数据）和父块（`add` 不传向量，只存储）；BM25 倒排、父块表、文档清单由 `KnowledgeBase._sync` 从 `chunks()` 重建。不要再给派生数据单独落盘。
+- **片段库接口**：`add`（按 `chunk_id` 覆盖写入）、`delete`、`chunks`、`search`、`__len__`。新的实现必须满足 `tests/test_store.py` 里 `_StoreCases` 的全部用例。
+- **增量更新**：片段元数据里的 `doc_fingerprint`、`doc_chunks`、`embedding_model` 由知识库写入，用来跳过未变化的文档、发现写了一半的文档、拒绝混用模型。写入顺序固定为"子块 → 父块 → 删除旧版本多出的片段"，不能改成先删后写。
+- **模型身份**：`TextEncoder.signature()` 必须包含所有会改变向量的参数（模型名、前缀、维度等）；新增 encoder 时要实现它。
+- **Chroma 的坑**：每条记录都必须带向量，不传时它会调用内置模型下载并生成 384 维向量，所以父块放在 `<collection>-stored` 集合并写入一维占位向量；集合一律用 `embedding_function=None` 打开。
+- 改动存储逻辑后，用 `learn-rag build` 连续运行两次（第二次应全部跳过）并运行 `learn-rag verify` 确认。
 
 ## 代码风格
 

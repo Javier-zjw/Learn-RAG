@@ -44,9 +44,9 @@
 | 切分 `chunker` | `fixed`、`recursive`、`markdown`、`structure` | 定长滑窗 / 按语义边界递归切分 / 按标题层级切分 / 基于解析结构的父子分块（见下文“结构感知的父子分块”） |
 | 向量化 `encoder` | `hashing`、`openai_compat`、`sentence_transformers`、`cached` | 特征哈希（零依赖离线可跑）/ 任意 OpenAI 兼容 embedding 服务（超批量上限时自动减半重试）/ 本地模型 / 带缓存的装饰器 |
 | 向量索引 `index` | `flat`、`chroma` | 暴力内积精确检索 / Chroma 持久化 HNSW（可调 `space`、`ef_construction`、`max_neighbors`、`ef_search`） |
-| 倒排索引 | `BM25Index` | 与向量索引同步写入、同步落盘 |
+| 倒排索引 | `BM25Index` | 不单独落盘，打开知识库时从片段库重建，和向量索引始终是同一批片段 |
 
-`KnowledgeBase`（`store/knowledge_base.py`）作为离线门面，对外只暴露 `add / expand / save / load / stats`，内部完成“切分 → 区分父子块 → 攒批向量化 → 写向量索引 → 写 BM25 索引”；子块进索引，父块只存储，`expand` 把命中的子块换成父块。
+`KnowledgeBase`（`store/knowledge_base.py`）作为离线门面，对外只暴露 `add / expand / verify / save / load / stats`，内部完成“比对文档指纹 → 切分 → 区分父子块 → 攒批向量化 → 写片段库 → 清理旧版本 → 维护 BM25”；子块进索引，父块只存储，`expand` 把命中的子块换成父块，`verify` 核对数据是否完整（见下文“向量化与 Chroma 存储”）。
 持久化目录按 collection 隔离，避免不同数据集的 BM25 索引互相覆盖；Chroma 未安装时会给出带排查建议的明确报错，而不是含糊的“未注册”。
 
 #### 文档解析（`learn_rag/parsing`）
@@ -143,7 +143,7 @@
 
 ##### 持久化
 
-- 子块的向量、BM25 索引和父块（`parents.jsonl`）一起落盘、一起加载。`build` 之后 `ask` 不必再传 `--docs`，会自动加载这三者；`eval --reuse-index` 同样如此。
+- 子块（向量 + 正文 + 元数据）和父块都存在片段库里（Chroma 或 flat 索引），BM25 和父块表打开时从片段库重建，详见下一节“向量化与 Chroma 存储”。`build` 之后 `ask` 不必再传 `--docs`；`eval --reuse-index` 同样如此。
 - flat 索引原样保存元数据；Chroma 的元数据只接受字符串和数字，标量字段原样存入供 `where` 过滤，完整元数据另存为一个 JSON 字段，取回时原样还原（不再把列表拼成字符串截断）。旧版本建的集合仍可读取。
 - 资产库目录写成相对路径时一律按项目根目录解析（MinerU、Docling 和命令行用同一条规则），从哪个目录启动都能找到同一张图。
 
@@ -176,7 +176,7 @@ chunker:
 | 句子重叠（可选） | `overlap_sentences`，默认关闭 |
 | 图片资产溯源 | 每张图记录路径、类型、图注、页码、坐标；问答时列出图注和本地文件 |
 | 原生图表数据可检索 | PPT / Excel 图表的数据表按表格切分、索引 |
-| 持久化 | 向量、BM25、父块一起落盘；Chroma 元数据完整保存 |
+| 持久化 | 子块和父块都存在片段库（Chroma）里，元数据完整保存；BM25 和父块表从片段库重建；增量更新与完整性核对见“向量化与 Chroma 存储” |
 | 纯文本兼容 | jsonl 语料按空行分段后走同一套规则 |
 
 尚未实现：
@@ -192,6 +192,80 @@ chunker:
 | 语义切分、Late Chunking | 未实现 | 暂不计划：解析结构比向量相似度更可靠；Late Chunking 需要能输出逐 token 向量的本地模型 |
 | 原生解析器的图片 | 不经 MinerU / Docling 时（如 `.doc`、`.rtf` 转换后由 python-docx 解析）不提取图片，块里没有图片信息 | 需要图片时改用 MinerU 或 Docling |
 | 分块效果评测集 | 还没有针对企业文档的问答标注，各种切分方案无法量化比较 | 基于 `samples/parsing/` 编写问题和出处标注，用 `run_ablation.py` 对比 |
+
+#### 向量化与 Chroma 存储（`learn_rag/store/`）
+
+切分后的子块交给 embedding 模型向量化，连同正文、元数据一起写入片段库；父块不向量化，只存储。
+**片段库是知识库唯一的数据来源**：BM25 倒排、父块表、文档清单都是打开知识库时从片段库重建的派生数据，
+不会出现“向量更新了、BM25 还是旧的”这类静默错位。
+
+##### 存了什么、存在哪
+
+| 位置 | 内容 |
+| --- | --- |
+| Chroma 集合 `<collection>` | 子块：`id`（`chunk_id`）、向量、正文（`documents`）、元数据。元数据里的标量字段（页码、章节、`doc_id` 等）单独存放供 `where` 过滤，完整元数据（含 `assets`、`kinds` 等列表）另存为一个 JSON 字段，读出时原样还原 |
+| Chroma 集合 `<collection>-stored` | 父块：正文和元数据。Chroma 的每条记录都必须带向量，不传时会自动下载内置模型（约 80 MB）现场生成，维度还和我们的对不上，所以父块单独放一个集合、写入一维占位向量，这个集合从不参与检索 |
+| `<index.path>/_kb_<collection>/meta.json` | 建库统计，仅供查看 |
+| flat 索引（默认配置） | 数据在内存里，`save` 时写出 `vectors.npy` + `chunks.jsonl`（逐行对应）和 `stored.jsonl`（父块），每个文件先写临时文件再原子替换；读取时发现向量行数和片段数对不上会报错 |
+
+知识库在每个片段的元数据里额外记录三项，用来保证完整性：
+
+| 字段 | 含义 |
+| --- | --- |
+| `doc_fingerprint` | 所属文档版本的指纹：正文、结构元素、文档元数据、切分参数、embedding 模型的哈希 |
+| `doc_chunks` | 所属文档的片段总数（子块 + 父块），用来发现写了一半的文档 |
+| `embedding_model` | 生成向量的模型（只有子块有），如 `openai_compat:text-embedding-3-small` |
+
+##### 写入流程
+
+```
+文档 ─▶ 计算指纹 ─▶ 库里已有同一版本且片段齐全？──是──▶ 跳过（不调用 embedding）
+                              │否
+                              ▼
+        切分 ─▶ 攒批向量化 ─▶ 按 id 写入子块（带向量）─▶ 写入父块 ─▶ 删除旧版本多出来的片段 ─▶ 更新 BM25
+```
+
+写入顺序保证任何一步中断时数据都能恢复：新版本写完之前旧版本一直完整地在库里；
+中断后最多多出几条旧片段，下次 `build` 时这篇文档因“指纹不一致”被识别出来，重新写入并清理。
+
+##### 完整性保障
+
+| 可能出现的问题 | 怎么保证 |
+| --- | --- |
+| 多次 `build`（不清空）后 BM25、父块和向量对不上 | BM25 和父块表从片段库重建，与向量永远是同一批片段 |
+| 文档修改后，旧版本的片段残留在库里 | 按指纹识别新版本，写入后删除旧版本多出来的片段 |
+| 文档没变也重复调用 embedding（费钱费时） | 指纹相同且片段齐全时跳过 |
+| 建库中途被杀、网络中断 | 写入顺序保证旧版本不丢；下次 `build` 自动续写和清理，已写入的文档不再向量化 |
+| embedding 服务报错 | 只跳过这一批文档（旧版本保留），计入 `failed`，其余文档照常写入；`build` 结束时以非零退出码提示 |
+| 换了 embedding 模型（维度相同时向量库自己发现不了） | 子块记录模型身份（`TextEncoder.signature()`），打开时与当前 encoder 不一致直接报错；带缓存的 encoder 的缓存键也带上模型身份 |
+| 坏向量（NaN、维度不一致） | 写入前检查，报错带排查提示 |
+| 列表、嵌套元数据被截断或变成字符串 | 完整元数据以 JSON 保存，读出与写入完全一致 |
+| 同一批里 id 重复、重复写入 | 按 `chunk_id` 覆盖写入，同一批重复的以最后一次为准 |
+
+##### 核对数据：`verify`
+
+`build` 结束时自动核对一次，也可以随时单独运行：
+
+```bash
+python -m learn_rag.cli verify --config configs/parsing.yaml --config configs/chroma.yaml
+```
+
+```
+[完整性检查] 发现 1 个问题　documents=17　chunks=74　bm25_chunks=74　parents=9
+  - 05_季度复盘.pptx：应有 [6] 个片段，实际 5 个，重新 build 会自动补齐
+```
+
+核对内容：每篇文档的片段是否齐全且属于同一个版本、子块的父块是否存在、有没有没人引用的父块、
+向量是否来自当前模型、可检索的片段数是否等于子块数。发现问题时退出码为 1，适合放进定时任务；
+大部分问题重新运行一次 `build` 就会自动修复。旧版本程序建的集合（片段没有指纹）也会被指出来，同样 `build` 一次即可补齐。
+
+##### 尚未实现
+
+- **源文件删除后的同步**：从文档目录里删掉的文件，它的片段仍留在库里，需要清空索引重建（`index.reset: true`）。
+- **改了切分代码本身**（而不是 `chunk_size` 等参数）时，指纹不会变，未变化的文档会被跳过，需要清空索引重建。
+- **只有元数据变化也会重新向量化**：指纹包含文档元数据，比如用不同的路径写法指定同一个文档目录（`./docs` 和绝对路径），`path` 变了，所有文档都会重新写入；建库时请固定路径写法。
+- **BM25 每次打开时重建**：片段数到几十万时启动会慢几秒到几十秒；需要时可以按片段库的版本缓存倒排表。
+- Chroma 没有事务，完整性靠“写入顺序 + 指纹 + 核对”保证，而不是原子提交。
 
 ### 3. 在线检索与生成链路
 
@@ -220,8 +294,9 @@ chunker:
 
 | 子命令 | 作用 |
 | --- | --- |
-| `ask` | 单次问答，展示答案、证据片段（分数/来源/标题）、每条证据的出处（页码、章节、图片的图注和本地文件）与各阶段耗时；`--docs` 可直接解析文档目录，不传时加载 `build` 落盘的索引（向量、BM25、父块） |
-| `build` | 离线建库并持久化向量索引、BM25 索引与父块（只需跑一次） |
+| `ask` | 单次问答，展示答案、证据片段（分数/来源/标题）、每条证据的出处（页码、章节、图片的图注和本地文件）与各阶段耗时；`--docs` 可直接解析文档目录，不传时打开 `build` 建好的知识库 |
+| `build` | 离线建库并持久化；可重复运行：未变化的文档跳过、修改过的文档替换旧版本、中断后续写；结束时自动核对完整性 |
+| `verify` | 核对已建好的知识库是否完整（片段齐全、父块存在、模型一致），有问题时退出码为 1 |
 | `eval` | 在数据集上评测，支持 `--retrieval-only`、`--judge`、`--reuse-index`、`--workers`、`--out` |
 | `ls` | 列出每一层所有已注册的可用实现 |
 
@@ -250,7 +325,7 @@ chunker:
 
 ### 8. 测试（`tests/`）
 
-基于 `unittest`：`test_core.py` 覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”；`test_parsing.py` 覆盖各格式解析、MinerU / Docling / OCR 适配器（mock）、解析缓存与降级和端到端问答；`test_chunking.py` 覆盖父子分块的各条规则、长句按逗号切分与句子重叠、表格展开与按行切分、图片资产条目、知识库的父块存储、展开与持久化（含 Chroma 建库后重新加载）、问答出处展示。样例文件在测试中现场生成。
+基于 `unittest`：`test_core.py` 覆盖文本切词、切分器、Hashing 向量、检索指标公式（Recall / MRR / NDCG / F1 / ROUGE-L）、端到端管线、API 精排、Chroma 索引、数据集加载与 `.env` 加载等容易写错的“接口契约”；`test_parsing.py` 覆盖各格式解析、MinerU / Docling / OCR 适配器（mock）、解析缓存与降级和端到端问答；`test_chunking.py` 覆盖父子分块的各条规则、长句按逗号切分与句子重叠、表格展开与按行切分、图片资产条目、知识库的父块存储、展开与持久化（含 Chroma 建库后重新加载）、问答出处展示；`test_store.py` 在 flat 和 Chroma 上分别验证片段库与知识库的数据完整性（按 id 覆盖、父块存储、删除、多次建库、文档修改、写入中断、embedding 失败、换模型、片段缺失、旧版本集合的修复）。样例文件在测试中现场生成。
 
 ---
 
@@ -363,7 +438,7 @@ python -m learn_rag.cli eval --config configs/models_env.yaml --config configs/d
 pip install -e ".[parsing]"
 python -m learn_rag.cli ask --config configs/parsing.yaml --docs path/to/docs -q "差旅住宿标准是多少？"
 
-# 离线建库并持久化，之后问答不必再传 --docs：ask 会加载落盘的 BM25 索引和父块
+# 离线建库并持久化（可重复运行，只处理新增和修改过的文档），之后问答不必再传 --docs
 python -m learn_rag.cli build --config configs/parsing.yaml --config configs/chroma.yaml --docs path/to/docs
 python -m learn_rag.cli ask --config configs/parsing.yaml --config configs/chroma.yaml -q "差旅住宿标准是多少？"
 ```
