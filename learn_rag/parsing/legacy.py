@@ -47,32 +47,40 @@ class LibreOfficeParser(DocumentParser):
             raise ValueError(f"libreoffice 解析器不支持 {suffix or '无后缀'}，支持：{sorted(_TARGETS)}")
 
         with tempfile.TemporaryDirectory(prefix="learn-rag-convert-") as out:
-            out_dir = Path(out)
-            # 每次转换独立的用户配置，避免并发时抢配置锁
-            profile = out_dir / "profile"
-            profile.mkdir()
-            cmd = [
-                self.command, "--headless", "--norestore",
-                f"-env:UserInstallation={profile.as_uri()}",
-                "--convert-to", target_format,
-                "--outdir", str(out_dir),
-                str(path),
-            ]
-            try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=self.timeout)
-            except FileNotFoundError:
-                raise RuntimeError(
-                    f"找不到 LibreOffice 命令 '{self.command}'。旧版 Office 格式需要先安装 LibreOffice，"
-                    "或把文件另存为 docx / xlsx / pptx 后再导入"
-                ) from None
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(f"LibreOffice 转换 {path.name} 超时（>{self.timeout}s），已跳过") from None
-            except subprocess.CalledProcessError as exc:
-                raise RuntimeError(f"LibreOffice 转换 {path.name} 失败：{(exc.stderr or '').strip()[-500:]}") from None
-
-            converted = out_dir / f"{path.stem}.{target_format}"
-            if not converted.exists():
-                raise RuntimeError(f"LibreOffice 声称转换成功，但没有生成 {converted.name}")
+            converted = convert(path, target_format, Path(out), command=self.command, timeout=self.timeout)
             # 走注册表而不是直接 import 具体解析器：符合"组件都从注册表装配"的约定，
             # 也让测试和配置可以用自己的实现替换转换后的解析步骤
             return registry.build("parser", {"type": target_format}).parse(converted)
+
+
+def convert(path: Path, target_format: str, out_dir: Path, *, command: str = "soffice", timeout: int = 600) -> Path:
+    """
+    用 LibreOffice 无头模式把 path 转成 target_format（docx / xlsx / pptx / pdf ...），返回转出的文件。
+    target_format 可以带导出过滤器，如 'pdf:calc_pdf_Export:{...}'，转出的文件后缀取冒号前的部分。
+    旧格式解析和查看页的原文预览（Office 转 PDF）共用这一个函数。
+    """
+    # 每次转换独立的用户配置，避免并发时抢配置锁
+    profile = out_dir / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        command, "--headless", "--norestore",
+        f"-env:UserInstallation={profile.as_uri()}",
+        "--convert-to", target_format,
+        "--outdir", str(out_dir),
+        str(path),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"找不到 LibreOffice 命令 '{command}'。旧版 Office 格式和 Office 原文预览需要先安装 LibreOffice，"
+            "或把文件另存为 docx / xlsx / pptx 后再导入"
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"LibreOffice 转换 {path.name} 超时（>{timeout}s），已跳过") from None
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"LibreOffice 转换 {path.name} 失败：{(exc.stderr or '').strip()[-500:]}") from None
+    converted = out_dir / f"{path.stem}.{target_format.split(':', 1)[0]}"
+    if not converted.exists():
+        raise RuntimeError(f"LibreOffice 声称转换成功，但没有生成 {converted.name}")
+    return converted

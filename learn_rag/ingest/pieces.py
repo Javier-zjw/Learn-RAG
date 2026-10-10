@@ -46,10 +46,32 @@ def split_element(element: Element, budget: int, overlap: int = 0) -> list[Eleme
         texts = _pack([part for s in _sentences(element.text) for part in _fit(s, budget)], budget, overlap)
     if len(texts) <= 1:
         return [element]
-    return [
-        Element(element.kind, text, element.level, element.page, element.bbox, {**element.extra, "part": i + 1})
-        for i, text in enumerate(texts)
-    ]
+    # 表格每片都重复了表头，在原文里找不到对应的连续一段，不记比例
+    spans = _spans(element.text, texts) if element.kind != "table" else [None] * len(texts)
+    pieces = []
+    for i, (text, span) in enumerate(zip(texts, spans)):
+        extra = {**element.extra, "part": i + 1}
+        if span:
+            extra["span"] = span
+        pieces.append(Element(element.kind, text, element.level, element.page, element.bbox, extra))
+    return pieces
+
+
+def _spans(whole: str, texts: list[str]) -> list[list[float] | None]:
+    """
+    每片在原元素里所占的比例 [起, 止]。扫描件只有整段的坐标，查看页按这个比例截出每片大致占的几行，
+    相邻的块不会画成同一个框。找不到对应位置的片（被重新拼接过的）记 None，退回整段坐标。
+    """
+    spans: list[list[float] | None] = []
+    pos = 0
+    for text in texts:
+        start = whole.find(text[:30], pos)
+        if start < 0 or not whole:
+            spans.append(None)
+            continue
+        spans.append([round(start / len(whole), 4), round(min(1.0, (start + len(text)) / len(whole)), 4)])
+        pos = start + 1
+    return spans
 
 
 def _split_table(text: str, budget: int) -> list[str]:

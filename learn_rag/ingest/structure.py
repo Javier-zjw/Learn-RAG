@@ -20,8 +20,8 @@ ingest.structure —— 结构感知的父子分块。
      这类指代在子块边界处导致漏召回时再打开。父块不重叠，它交给大模型，重复内容只会浪费上下文。
 
 子块的 metadata.parent_id 指向父块。父块和子块都从 split() 返回，由知识库决定谁进索引、谁只存储。
-每个块都记录章节路径、页码范围、元素类型和图片资产（每张图的路径、图注、页码、坐标），
-回答时可以溯源到页、取回原图。
+每个块都记录章节路径、页码范围、元素类型、图片资产（每张图的路径、图注、页码、坐标）
+和版面位置（regions：每个元素所在的页和归一化坐标），回答时可以溯源到页、取回原图，查看页能在原文上框出分块。
 没有解析结构的纯文本（如 jsonl 语料）按空行分段后走同一套规则，调用方无需区分。
 """
 
@@ -203,7 +203,41 @@ def _describe(path: list[str], group: list[Element]) -> dict[str, object]:
     assets = _assets(group)
     if assets:
         meta["assets"] = assets
+    regions = _regions(group)
+    if regions:
+        meta["regions"] = regions
     return meta
+
+
+def _regions(group: list[Element]) -> list[dict[str, object]]:
+    """
+    块在原文版面上的位置：每个元素的页码和坐标（[0,1] 归一化，左上角为原点），查看页据此在页面图上框出分块。
+
+    只收归一化坐标（MinerU 给出的就是）。原生 PDF 解析器的坐标是 PDF 点，查看页对有文字层的页面
+    直接用文字对齐定位，不需要它；这里收的坐标主要服务扫描页。元素被合并过（跨块、跨页接起来的段落和表格）
+    时 extra.boxes 记着其余几块的位置；被切成几片时（extra.span）按比例截取整段坐标的相应几行。
+    """
+    regions: list[dict[str, object]] = []
+    for element in group:
+        boxes = [{"page": element.page, "bbox": element.bbox}, *element.extra.get("boxes", [])]
+        span = element.extra.get("span") if len(boxes) == 1 else None
+        for box in boxes:
+            page, bbox = box.get("page"), box.get("bbox")
+            if not page or not _normalized(bbox):
+                continue
+            if span:
+                x0, y0, x1, y1 = bbox
+                bbox = [x0, y0 + (y1 - y0) * span[0], x1, y0 + (y1 - y0) * span[1]]
+            entry = {"page": page, "bbox": [round(v, 4) for v in bbox]}
+            if entry not in regions:
+                regions.append(entry)
+    return regions
+
+
+def _normalized(bbox: object) -> bool:
+    return (isinstance(bbox, (list, tuple)) and len(bbox) == 4
+            and all(isinstance(v, (int, float)) and -0.01 <= v <= 1.01 for v in bbox)
+            and bbox[2] > bbox[0] and bbox[3] > bbox[1])
 
 
 # 解析器在没有图注和描述时填的占位文字，不算图注

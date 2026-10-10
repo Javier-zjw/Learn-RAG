@@ -84,7 +84,18 @@
       0.282
     ],
     "extra": {
-      "mineru_type": "text"
+      "mineru_type": "text",
+      "boxes": [
+        {
+          "page": 1,
+          "bbox": [
+            0.087,
+            0.29,
+            0.467,
+            0.313
+          ]
+        }
+      ]
     }
   },
   {
@@ -207,7 +218,18 @@
       0.132
     ],
     "extra": {
-      "mineru_type": "text"
+      "mineru_type": "text",
+      "boxes": [
+        {
+          "page": 2,
+          "bbox": [
+            0.083,
+            0.141,
+            0.375,
+            0.162
+          ]
+        }
+      ]
     }
   },
   {
@@ -237,7 +259,18 @@
       0.221
     ],
     "extra": {
-      "mineru_type": "text"
+      "mineru_type": "text",
+      "boxes": [
+        {
+          "page": 2,
+          "bbox": [
+            0.085,
+            0.229,
+            0.444,
+            0.252
+          ]
+        }
+      ]
     }
   },
   {

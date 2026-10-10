@@ -338,6 +338,15 @@ def _append_table_rows(table: Element, continued: Element) -> None:
     table.text += "\n" + "\n".join(lines)
     if continued.page and table.page and continued.page > table.page:
         table.extra["page_end"] = continued.page
+    _keep_box(table, continued)
+
+
+def _keep_box(target: Element, merged: Element) -> None:
+    """合并后只剩 target 自己的坐标，被并进来的那块的位置记在 extra.boxes 里，查看页才能把两块都框出来。"""
+    boxes = target.extra.setdefault("boxes", [])
+    if merged.bbox:
+        boxes.append({"page": merged.page, "bbox": merged.bbox})
+    boxes.extend(merged.extra.get("boxes", []))
 
 
 def _join_wrapped_text(elements: list[Element]) -> list[Element]:
@@ -359,6 +368,7 @@ def _join_wrapped_text(elements: list[Element]) -> list[Element]:
             target.text += separator + element.text
             if element.page and target.page and element.page > target.page:
                 target.extra["page_end"] = element.page
+            _keep_box(target, element)
             continue
         out.append(element)
     return out

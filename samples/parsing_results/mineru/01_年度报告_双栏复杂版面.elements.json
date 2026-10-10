@@ -464,7 +464,18 @@
     ],
     "extra": {
       "mineru_type": "text",
-      "page_end": 3
+      "page_end": 3,
+      "boxes": [
+        {
+          "page": 3,
+          "bbox": [
+            0.079,
+            0.071,
+            0.506,
+            0.088
+          ]
+        }
+      ]
     }
   },
   {
