@@ -16,6 +16,7 @@ const props = defineProps<{
   parentLabel?: string      // 子块所属父块的编号
   childLabels?: Record<string, string>
   previous?: string         // 从父块点进子块时，返回父块的编号
+  location?: string         // 在原文上的位置，如"第 3 页 · 文字层对齐"
 }>()
 const emit = defineEmits<{ (e: 'select', id: string): void; (e: 'back'): void }>()
 
@@ -78,6 +79,10 @@ async function copy(text: string) {
           <dd>{{ chunk.section || '—' }}</dd>
           <dt>页码</dt>
           <dd>{{ pages }}</dd>
+          <template v-if="location">
+            <dt>原文</dt>
+            <dd>{{ location }}</dd>
+          </template>
           <dt>元素</dt>
           <dd class="kinds">
             <el-tag v-for="k in chunk.kinds" :key="k" size="small" effect="plain">{{ KIND_LABELS[k] ?? k }}</el-tag>

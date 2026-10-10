@@ -17,6 +17,7 @@ server.library —— 知识库管理。页面上的每个操作（新建、追�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ from ..pipeline.rag import RagPipeline
 from . import environment
 from .chunk_view import document_view
 from .mineru_service import STARTING, MinerUService
+from .preview import Preview, PreviewUnavailable
 from .jobs import DONE, EMBEDDING, FAILED, PARSING, SKIPPED, WAITING, FileProgress, Job, JobRunner, capture_warnings
 from .uploads import Staging, safe_relative
 
@@ -69,6 +71,8 @@ class Library:
         self.kbs_dir = self.root / "kbs"
         self.kbs_dir.mkdir(parents=True, exist_ok=True)
         self.staging = Staging(self.root / "uploads")
+        self.preview = Preview(self.root / "preview")      # 按文件内容缓存，多个知识库共用
+        self._digests: dict[tuple[str, int, int], str] = {}
         self.jobs = runner or JobRunner()
         self._pipes: dict[str, tuple[str, RagPipeline]] = {}   # kb_id -> (参数, 管线)
         self._locks: dict[str, threading.RLock] = {}
@@ -183,6 +187,48 @@ class Library:
         view = document_view(chunks, overlap=chunker.get("overlap_sentences", 0) > 0)
         return {**view, "kb_id": kb_id, "kb_name": manifest["name"], "settings": manifest["settings"],
                 "file": manifest["files"].get(doc_id, {})}
+
+    def layout(self, kb_id: str, doc_id: str) -> dict[str, Any]:
+        """
+        原文预览：每页尺寸、每个子块在页面上的位置、没有进入任何分块的文字（见 preview.py）。
+        不能预览时（Markdown、CSV 等没有版面，或缺少 LibreOffice）返回 available=False 和原因，页面退回文本视图。
+        """
+        file = self._source_file(kb_id, doc_id)
+        with self._lock(kb_id):
+            chunks = self._pipeline(kb_id).kb.chunks_of(doc_id)
+        if not chunks:
+            raise NotFound(f"知识库里没有文档 {doc_id} 的片段")
+        children = document_view(chunks)["children"]
+        targets = [{"id": c["id"], "text": c["body"], "regions": c["metadata"].get("regions") or []} for c in children]
+        headings = list(dict.fromkeys(h for c in children for h in str(c["section"]).split(" > ") if h))
+        try:
+            digest = self._digest(file)
+            # version 跟着文件内容变，页面图片的 URL 带上它，同名文件被替换后浏览器不会用旧图
+            return {"available": True, "version": digest[:12], **self.preview.layout(file, digest, targets, headings)}
+        except PreviewUnavailable as exc:
+            return {"available": False, "reason": str(exc)}
+
+    def page_image(self, kb_id: str, doc_id: str, page: int) -> Path:
+        file = self._source_file(kb_id, doc_id)
+        try:
+            return self.preview.page_image(file, self._digest(file), page)
+        except PreviewUnavailable as exc:
+            raise NotFound(str(exc)) from None
+
+    def _source_file(self, kb_id: str, doc_id: str) -> Path:
+        self._manifest(kb_id)
+        file = self.kbs_dir / kb_id / "files" / safe_relative(doc_id)
+        if not file.is_file():
+            raise NotFound(f"知识库里没有文件 {doc_id}")
+        return file
+
+    def _digest(self, file: Path) -> str:
+        """文件内容哈希，按路径、修改时间和大小缓存：翻页时每张图都要用到它，不能每次都把整个文件读一遍。"""
+        stat = file.stat()
+        key = (str(file), stat.st_mtime_ns, stat.st_size)
+        if key not in self._digests:
+            self._digests[key] = hashlib.sha256(file.read_bytes()).hexdigest()
+        return self._digests[key]
 
     def asset(self, kb_id: str, asset: str) -> Path:
         manifest = self._manifest(kb_id)

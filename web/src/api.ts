@@ -153,6 +153,22 @@ export interface ParentItem extends Omit<ChunkItem, 'parent_id' | 'overlap'> {
   children: string[]
 }
 
+export interface Region {
+  page: number
+  bbox: number[]            // [x0, y0, x1, y1]，按页面宽高归一化到 [0,1]，左上角为原点
+}
+
+export interface PageLayout {
+  available: boolean
+  reason?: string
+  version?: string
+  pages: { width: number; height: number }[]
+  regions: Record<string, Region[]>
+  methods: Record<string, 'text' | 'layout' | 'none'>
+  uncovered: Region[]
+  coverage: number | null
+}
+
 export interface DocView {
   doc_id: string
   title: string
@@ -220,6 +236,8 @@ export const api = {
   document: (id: string, docId: string) => request<DocView>('GET', `/api/kbs/${id}/documents/${docPath(docId)}`),
   deleteDocument: (id: string, docId: string) =>
     request<{ ok: boolean }>('DELETE', `/api/kbs/${id}/documents/${docPath(docId)}`),
+  layout: (id: string, docId: string) => request<PageLayout>('GET', `/api/kbs/${id}/layout?doc=${encodeURIComponent(docId)}`),
+  pageUrl: (id: string, docId: string, page: number) => `/api/kbs/${id}/page?doc=${encodeURIComponent(docId)}&n=${page}`,
   assetUrl: (id: string, asset: string) => `/api/kbs/${id}/assets/${asset.split('/').map(encodeURIComponent).join('/')}`,
 }
 

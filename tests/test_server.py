@@ -370,5 +370,106 @@ class TestFrontendBuild(unittest.TestCase):
                 self.assertIn("继续使用上次的构建", ensure_built(web))    # 源码更新了但没有 npm
 
 
+def _make_pdf(path: Path) -> None:
+    """两页的英文 PDF：页眉 + 标题 + 几段正文，第二页一段。"""
+    import pymupdf
+
+    doc = pymupdf.open()
+    paragraphs = [
+        "Retrieval augmented generation combines a retriever with a generator to answer questions.",
+        "Hybrid retrieval fuses dense vectors and sparse keywords with reciprocal rank fusion.",
+        "Parent child chunking indexes small chunks and returns their larger parents to the model.",
+    ]
+    for number, texts in enumerate([paragraphs[:2], paragraphs[2:]], start=1):
+        page = doc.new_page()
+        page.insert_text((72, 40), f"Internal handbook page {number}", fontsize=8)
+        y = 90
+        if number == 1:
+            page.insert_text((72, y), "Overview", fontsize=16)
+            y += 40
+        for text in texts:
+            page.insert_textbox(pymupdf.Rect(72, y, 520, y + 60), text, fontsize=11)
+            y += 70
+    doc.save(path)
+
+
+@unittest.skipUnless(_has("fastapi") and _has("httpx") and _has("multipart") and _has("pymupdf"),
+                     "未安装 fastapi / pymupdf")
+class TestPagePreview(unittest.TestCase):
+    """原文视图：页面图片 + 每个分块在页面上的位置 + 未进入分块的文字。"""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from learn_rag.server.app import create_app
+
+        self.tmp = tempfile.mkdtemp()
+        self.client = TestClient(create_app(self.tmp))
+        self.library = self.client.app.state.library
+        pdf = Path(self.tmp) / "handbook.pdf"
+        _make_pdf(pdf)
+        files = [("files", ("handbook.pdf", pdf.read_bytes())), ("files", ("notes.md", b"# Notes\n\nplain text"))]
+        upload = self.client.post("/api/uploads", data={"paths": ["handbook.pdf", "notes.md"]}, files=files).json()
+        settings = {"chunker": {"type": "structure", "chunk_size": 30, "parent_size": 120},
+                    "encoder": {"type": "hashing", "model": "hashing"}, "index": {"type": "flat"},
+                    "parsers": {".pdf": ["pdf"]}}
+        body = self.client.post("/api/kbs", json={"name": "预览", "upload_id": upload["upload_id"],
+                                                  "settings": settings}).json()
+        self.assertEqual(self.library.jobs.wait(body["job"]["id"]).status, "done")
+        self.kb = body["kb"]["id"]
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_every_chunk_is_located_on_its_page(self):
+        layout = self.client.get(f"/api/kbs/{self.kb}/layout", params={"doc": "handbook.pdf"}).json()
+        self.assertTrue(layout["available"])
+        self.assertEqual(len(layout["pages"]), 2)
+        view = self.client.get(f"/api/kbs/{self.kb}/documents/handbook.pdf").json()
+        for child in view["children"]:
+            self.assertEqual(layout["methods"][child["id"]], "text", child["body"])
+            pages = {r["page"] for r in layout["regions"][child["id"]]}
+            self.assertEqual(pages, {child["page_start"]} if child["page_start"] == child["page_end"] else pages)
+            for region in layout["regions"][child["id"]]:
+                x0, y0, x1, y1 = region["bbox"]
+                self.assertTrue(0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)
+        # 页眉被解析器丢弃，它是唯一没进入分块的文字；标题也算覆盖
+        self.assertTrue(layout["uncovered"])
+        self.assertTrue(all(r["bbox"][1] < 0.1 for r in layout["uncovered"]), layout["uncovered"])
+        self.assertGreater(layout["coverage"], 0.8)
+
+    def test_page_images_and_unavailable_formats(self):
+        response = self.client.get(f"/api/kbs/{self.kb}/page", params={"doc": "handbook.pdf", "n": 2})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(self.client.get(f"/api/kbs/{self.kb}/page", params={"doc": "handbook.pdf", "n": 9}).status_code, 404)
+        markdown = self.client.get(f"/api/kbs/{self.kb}/layout", params={"doc": "notes.md"}).json()
+        self.assertFalse(markdown["available"])
+        self.assertIn("只能按文本查看", markdown["reason"])
+
+
+class TestPreviewMatching(unittest.TestCase):
+    def test_small_differences_do_not_break_alignment(self):
+        from learn_rag.server.preview import _match, _normalize
+
+        stream = _normalize("页眉文字。本报告总结公司 2025 年经营情况，全年营业收入 4,860 万元，同比增长 18.6%。页脚")
+        target = _normalize("本报告总结公司2025年经营情况。全年营业收人4860万元，同比增长18.6%")   # 一个错字、标点不同
+        spans, ratio = _match(stream, target, 0)
+        self.assertGreater(ratio, 0.8)
+        self.assertEqual(len(spans), 1)
+        self.assertTrue(stream[spans[0][0]:spans[0][1]].startswith("本报告"))
+        self.assertTrue(stream[spans[0][0]:spans[0][1]].endswith("186"))     # 块尾不足一段的几个字也对上了
+
+    def test_heading_prefers_its_own_line_over_page_header(self):
+        from collections import Counter
+
+        from learn_rag.server.preview import _find_heading
+
+        stream = "星河科技产品手册v2" + "产品手册" + "正文"
+        lines = [1] * 10 + [2] * 4 + [3] * 2           # 第 1 行是页眉，第 2 行是标题
+        boxes = [(1, line, 0, 0, 0, 0) for line in lines]
+        self.assertEqual(_find_heading(stream, boxes, Counter(lines), "产品手册"), [10, 14])
+
+
 if __name__ == "__main__":
     unittest.main()

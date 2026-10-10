@@ -14,6 +14,8 @@ server.app —— HTTP 接口。只做参数解析和错误码翻译，所有逻
     POST   /api/kbs/{kb_id}/rebuild              按新参数重建
     GET    /api/kbs/{kb_id}/documents/{doc_id}   一篇文档的全部分块
     DELETE /api/kbs/{kb_id}/documents/{doc_id}
+    GET    /api/kbs/{kb_id}/layout?doc=           原文预览：每页尺寸、每个子块在页面上的位置、未进入分块的文字
+    GET    /api/kbs/{kb_id}/page?doc=&n=          第 n 页的页面图片
     GET    /api/kbs/{kb_id}/assets/{asset}       图片资产
     GET    /api/jobs/{job_id}                    任务快照
     GET    /api/jobs/{job_id}/events             任务进度（SSE，状态变化时推送快照，任务结束后关闭）
@@ -155,6 +157,16 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
     def remove_document(kb_id: str, doc_id: str) -> dict[str, Any]:
         library.remove_document(kb_id, doc_id)
         return {"ok": True}
+
+    @app.get("/api/kbs/{kb_id}/layout")
+    def layout(kb_id: str, doc: str) -> dict[str, Any]:
+        return library.layout(kb_id, doc)
+
+    @app.get("/api/kbs/{kb_id}/page")
+    def page_image(kb_id: str, doc: str, n: int) -> FileResponse:
+        # 页面图片按文件内容缓存，内容不变 URL 就不变，浏览器可以长期缓存
+        return FileResponse(library.page_image(kb_id, doc, n), media_type="image/png",
+                            headers={"Cache-Control": "private, max-age=86400"})
 
     @app.get("/api/kbs/{kb_id}/assets/{asset:path}")
     def asset(kb_id: str, asset: str) -> FileResponse:

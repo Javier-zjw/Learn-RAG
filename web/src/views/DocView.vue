@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft } from '@element-plus/icons-vue'
-import { api, type ChunkItem, type DocView, type ParentItem } from '../api'
+import { ArrowLeft, Minus, Plus, WarningFilled } from '@element-plus/icons-vue'
+import { api, type ChunkItem, type DocView, type PageLayout, type ParentItem } from '../api'
 import { typeGroup } from '../format'
 import { renderChunk } from '../markdown'
 import ChunkInspector from '../components/ChunkInspector.vue'
+import PageView from '../components/PageView.vue'
 
 interface Heading { kind: 'heading'; key: string; text: string; depth: number; path: string[] }
 interface Entry { kind: 'chunk'; key: string; chunk: ChunkItem; index: number; html: string }
@@ -26,14 +27,50 @@ const drawer = ref(false)
 const activeHeading = ref('')
 const body = ref<HTMLElement>()
 
+// 原文视图：PDF、Word、PPT、Excel、图片按页面显示并框出分块；Markdown、CSV 等没有版面，只有文本视图
+const mode = ref<'page' | 'text'>('page')
+const pageLayout = ref<PageLayout | null>(null)
+const layoutLoading = ref(false)
+const showGaps = ref(true)
+const zoom = ref(1)
+const pageView = ref<InstanceType<typeof PageView>>()
+
 async function load() {
   try {
     view.value = await api.document(kbId.value, docId.value)
     error.value = ''
   } catch (err) {
     error.value = (err as Error).message
+    return
   }
+  layoutLoading.value = true
+  try {
+    pageLayout.value = await api.layout(kbId.value, docId.value)
+  } catch (err) {
+    pageLayout.value = { available: false, reason: (err as Error).message, pages: [], regions: {}, methods: {},
+                         uncovered: [], coverage: null }
+  } finally {
+    layoutLoading.value = false
+  }
+  if (!pageLayout.value.available) mode.value = 'text'
 }
+
+const pageReady = computed(() => mode.value === 'page' && !!pageLayout.value?.available)
+const unlocated = computed(() => {
+  const methods = pageLayout.value?.methods ?? {}
+  return (view.value?.children ?? []).filter((c) => methods[c.id] === 'none')
+})
+const zoomBy = (step: number) => (zoom.value = Math.min(2, Math.max(0.6, Math.round((zoom.value + step) * 10) / 10)))
+const METHOD_TEXT = { text: '文字层对齐', layout: '版面坐标（扫描页或公式）', none: '' } as const
+const location = computed(() => {
+  const item = selected.value
+  const layout = pageLayout.value
+  if (!item || item.parent || !layout?.available) return ''
+  const method = layout.methods[item.item.id] ?? 'none'
+  if (method === 'none') return '未能在原文中定位（如 PPT 备注、隐藏工作表、图片里的文字）'
+  const pages = [...new Set((layout.regions[item.item.id] ?? []).map((r) => r.page))]
+  return `第 ${pages.join('、')} 页 · ${METHOD_TEXT[method]}`
+})
 watch([kbId, docId], load, { immediate: true })
 
 // ---------------------------------------------------------------- 把子块排成"标题 + 父块分组"
@@ -104,6 +141,10 @@ function selectFromInspector(id: string) {
 }
 
 function scrollTo(id: string) {
+  if (pageReady.value) {
+    nextTick(() => pageView.value?.reveal(id))
+    return
+  }
   nextTick(() => {
     const isParent = view.value?.parents.some((p) => p.id === id)
     const el = document.querySelector<HTMLElement>(isParent ? `[data-parent="${CSS.escape(id)}"]` : `[data-chunk="${CSS.escape(id)}"]`)
@@ -112,6 +153,19 @@ function scrollTo(id: string) {
 }
 
 function jump(key: string) {
+  if (pageReady.value) {
+    // 原文视图里跳到这一节第一个能定位的子块
+    const heading = layout.value.headings.find((h) => h.key === key)
+    const first = (view.value?.children ?? []).find((c) => {
+      const path = c.section ? c.section.split(' > ') : []
+      return heading?.path.every((part, i) => path[i] === part) && pageLayout.value?.methods[c.id] !== 'none'
+    })
+    if (first) {
+      activeHeading.value = key
+      pageView.value?.reveal(first.id)
+    }
+    return
+  }
   document.getElementById(key)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
@@ -181,6 +235,11 @@ onBeforeUnmount(() => {
         <span v-if="view.parser" class="muted">{{ view.parser }}</span>
       </div>
       <div class="switches">
+        <el-tooltip :disabled="!pageLayout || pageLayout.available" :content="pageLayout?.reason" placement="bottom">
+          <el-segmented v-model="mode" size="small" :options="[
+            { label: '原文', value: 'page', disabled: !!pageLayout && !pageLayout.available },
+            { label: '文本', value: 'text' }]" />
+        </el-tooltip>
         <el-switch v-model="showParents" size="small" active-text="父块边界" />
         <el-switch v-model="showNumbers" size="small" active-text="块编号" />
       </div>
@@ -198,7 +257,35 @@ onBeforeUnmount(() => {
         <p v-if="!toc.length" class="muted toc-empty">这篇文档没有标题</p>
       </nav>
 
-      <article ref="body" class="body" :class="{ 'hide-parents': !showParents, 'hide-numbers': !showNumbers }">
+      <div v-if="mode === 'page' && (layoutLoading || pageReady)" class="body page-body">
+        <div v-if="pageReady && pageLayout" class="page-bar">
+          <span v-if="pageLayout.coverage !== null" class="cov" :class="{ low: pageLayout.coverage < 0.9 }">
+            原文覆盖 <b>{{ (pageLayout.coverage * 100).toFixed(1) }}%</b>
+          </span>
+          <span v-else class="muted">没有文字层（扫描件），按解析器给出的版面坐标定位</span>
+          <el-tooltip v-if="unlocated.length" placement="bottom"
+                      :content="`未能在原文定位：${unlocated.map((c) => childNumber.get(c.id)).join(' ')}，可在文本视图查看`">
+            <span class="warn"><el-icon><WarningFilled /></el-icon> {{ unlocated.length }} 块未定位</span>
+          </el-tooltip>
+          <el-switch v-model="showGaps" size="small" active-text="标出未进入分块的文字" />
+          <span class="legend-gap" />
+          <div class="zoom">
+            <el-button text circle size="small" :icon="Minus" @click="zoomBy(-0.1)" />
+            <span>{{ Math.round(zoom * 100) }}%</span>
+            <el-button text circle size="small" :icon="Plus" @click="zoomBy(0.1)" />
+          </div>
+        </div>
+        <PageView v-if="pageReady && pageLayout" ref="pageView" :kb-id="kbId" :doc-id="docId" :layout="pageLayout"
+                  :children="view.children" :parents="view.parents" :selected-id="selectedId"
+                  :show-parents="showParents" :show-numbers="showNumbers" :show-gaps="showGaps" :zoom="zoom"
+                  @select="select" />
+        <div v-else class="page-loading">
+          <el-skeleton :rows="10" animated />
+          <p class="hint">正在生成原文预览：渲染页面、在原文上定位每个分块。Word、PPT、Excel 第一次打开要先转换成 PDF，稍等几秒</p>
+        </div>
+      </div>
+
+      <article v-else ref="body" class="body" :class="{ 'hide-parents': !showParents, 'hide-numbers': !showNumbers }">
         <template v-for="block in layout.blocks" :key="block.key">
           <template v-if="block.kind === 'heading'">
             <component :is="`h${Math.min(block.depth + 2, 5)}`" :id="block.key" class="heading"
@@ -237,7 +324,7 @@ onBeforeUnmount(() => {
                         :budget="budget.size" :unit="budget.unit"
                         :parent-label="parentNumber.get((selected?.item as ChunkItem | undefined)?.parent_id ?? '')"
                         :child-labels="Object.fromEntries(childNumber)"
-                        :previous="returnTo ? `返回父块 ${parentNumber.get(returnTo)}` : ''"
+                        :previous="returnTo ? `返回父块 ${parentNumber.get(returnTo)}` : ''" :location="location"
                         @select="selectFromInspector" @back="select(returnTo); scrollTo(selectedId)" />
       </aside>
     </div>
@@ -249,7 +336,7 @@ onBeforeUnmount(() => {
                       :budget="budget.size" :unit="budget.unit"
                       :parent-label="parentNumber.get((selected?.item as ChunkItem | undefined)?.parent_id ?? '')"
                       :child-labels="Object.fromEntries(childNumber)"
-                      :previous="returnTo ? `返回父块 ${parentNumber.get(returnTo)}` : ''"
+                      :previous="returnTo ? `返回父块 ${parentNumber.get(returnTo)}` : ''" :location="location"
                       @select="selectFromInspector" @back="select(returnTo); scrollTo(selectedId)" />
     </el-drawer>
   </div>
@@ -406,6 +493,37 @@ onBeforeUnmount(() => {
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumbs img { max-height: 120px; max-width: 220px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); }
 .loading { padding: 24px; max-width: 860px; margin: 0 auto; }
+.page-body { max-width: none; }
+.page-bar {
+  position: sticky;
+  top: 62px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 auto 14px;
+  padding: 6px 14px;
+  max-width: 860px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.cov b { color: var(--success); font-variant-numeric: tabular-nums; }
+.cov.low b { color: var(--warning); }
+.warn { display: inline-flex; align-items: center; gap: 4px; color: var(--warning); cursor: default; }
+.legend-gap {
+  width: 22px;
+  height: 12px;
+  margin-left: -10px;
+  border: 1px dashed rgba(212, 72, 59, 0.85);
+  background: repeating-linear-gradient(-45deg, rgba(212, 72, 59, 0.2) 0 3px, transparent 3px 6px);
+}
+.zoom { display: flex; align-items: center; gap: 2px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.page-loading { max-width: 860px; margin: 0 auto; }
+.page-loading .hint { margin-top: 12px; }
 @media (max-width: 1080px) {
   .stats { display: none; }
 }
