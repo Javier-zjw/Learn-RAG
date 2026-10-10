@@ -81,6 +81,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **句子重叠默认关闭**（`overlap_sentences`）：只作用于同一长段落切出的相邻子块，不跨元素，表格和父块不重叠；重叠不能让块超出预算。
 - **大小按 token 估算**：一律用 `core/text.py` 的 `count_tokens`，不要用 `len()`；它向上取整，装箱时相加不会超出预算。
 - **展开放在精排之后**：精排在短小的子块上做，再展开、去重、取 `top_k`；不生成父块的切分器不受影响，管线里不为它写分支。
+- **版面位置**：块元数据 `regions` 是 `{page, bbox}` 列表（bbox 按页面宽高归一化到 [0,1]，左上角为原点），由 `_regions` 从元素的页码和坐标汇总，只收归一化坐标；元素被合并过时其余几块的位置在 `extra.boxes`，被切片时按 `extra.span` 截取。查看页的原文视图靠它定位扫描页上的分块。
 - **图片资产**：块元数据 `assets` 是条目列表（`asset`、`kind`、`caption`、`page`、`bbox`、`mime`，没有的字段不写），由 `_describe` 从元素的 `extra.asset` 汇总，同一块内按路径去重。资产库目录的相对路径一律用 `parsing/assets.py` 的 `resolve_assets_dir` 按项目根解析。
 - **元数据不能在存储层走样**：向量库只能存标量时，完整元数据序列化成 JSON 一起存、取回时还原（见 `chroma_index.py`），不要拼接或截断列表。
 - 改切分规则后用 `export_parsed.py --replay` 重新生成 `samples/parsing_results/`，对照 `chunks.jsonl` 检查效果。
@@ -107,6 +108,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **页面参数 → 配置的翻译只在一处**：`Library.validate` 和 `Library._config`。新增一个页面参数时同时改 `validate`、`environment.default_settings` 和前端 `SettingsForm.vue`。
 - **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
 - **一条命令启停全部**：`learn-rag serve` 负责构建前端（`server/frontend.py`）和启停 MinerU（`server/mineru_service.py`，复用 `scripts/start_mineru.sh` / `stop_mineru.sh`，不要在 Python 里重写启停逻辑）。MinerU 在后台启动，不能阻塞页面服务；退出路径（Ctrl+C、SIGTERM、关闭终端的 SIGHUP、atexit）都要能关掉它，`stop` 必须可以重复调用。
+- **原文视图**（`server/preview.py`）：页面有文字层时用文字对齐定位分块，否则用块元数据 `regions`；Office 用 `parsing/legacy.py` 的 `convert` 转 PDF。页面图片、转换出的 PDF 和定位结果按文件内容哈希缓存在 `<数据目录>/preview/`。定位规则改动后用 `samples/` 里的 PDF、Word、PPT、Excel 核对覆盖率和未覆盖的文字是否都说得清原因。
 - **密钥不出后端**：页面只看到“是否已配置”，地址和密钥由 encoder 从环境变量读取，不写进 `kb.json`。
 - **前端约定**：请求都走 `src/api.ts`；颜色只用 `styles.css` 里的令牌（浅色、深色各一套）；分块底色要保证正文对比度不低于 12:1；动画要尊重 `prefers-reduced-motion`；`defineModel` 在同一轮里只赋值一次（连续赋值会读到旧值、互相覆盖）。
 - 改动后跑 `python -m unittest tests.test_server`、`cd web && npm run build`（含类型检查），再用 `learn-rag serve` 在浏览器里走一遍“上传 → 推荐 → 建库 → 查看分块”。
