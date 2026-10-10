@@ -64,3 +64,9 @@ def locate_asset(asset: str, assets_dirs: list[str | Path]) -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+def configured_assets_dirs(parsing: dict | None) -> list[str]:
+    """解析配置里各解析器的资产库目录（MinerU、Docling 可以各配一个）。"""
+    options = (parsing or {}).get("options") or {}
+    return [o["assets_dir"] for o in options.values() if isinstance(o, dict) and o.get("assets_dir")]

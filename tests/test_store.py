@@ -195,6 +195,19 @@ class _KnowledgeBaseCases:
         hit = kb.bm25_index.search("编号210", 1)[0]               # 第二次建库的文档也在，且能展开成父块
         self.assertNotEqual(kb.expand([hit])[0].chunk.chunk_id, hit.chunk.chunk_id)
 
+    def test_remove_deletes_every_trace_of_a_document(self):
+        self._build([_doc(1), _doc(2)])
+        kb = self._kb()
+        expected = len(kb.chunks_of("doc1.pdf"))
+        self.assertEqual([c.position for c in kb.chunks_of("doc1.pdf")], list(range(expected)))
+        self.assertEqual(kb.remove(["doc1.pdf", "missing.pdf"]), expected)
+        kb.save(self.tmp + "/kb")
+        kb = self._kb()
+        self.assertEqual(kb.documents(), ["doc2.pdf"])
+        self.assertEqual(kb.chunks_of("doc1.pdf"), [])
+        self.assertFalse(any(h.doc_id == "doc1.pdf" for h in kb.bm25_index.search("编号100", 10)))
+        self.assertTrue(kb.verify()["ok"])
+
     def test_unchanged_documents_are_skipped_without_embedding(self):
         self._build([_doc(1), _doc(2)])
         embedded = self.encoder.texts

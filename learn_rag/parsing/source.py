@@ -81,33 +81,46 @@ class FileSource(DocumentSource):
         self._parsers: dict[str, DocumentParser] = {}
 
     def load(self) -> Iterable[Document]:
-        # 显式指定的单个文件总是尝试解析；目录扫描则过滤掉隐藏文件、临时文件和超限文件
+        for file in self.files():
+            document = self.load_file(file)
+            if document is not None:
+                yield document
+
+    def files(self) -> list[Path]:
+        """要解析的文件：显式指定的单个文件总是尝试解析；目录扫描则过滤掉隐藏文件、临时文件、超限文件和不支持的格式。"""
         if self.root.is_file():
-            files = [self.root]
-        else:
-            files = [p for p in sorted(self.root.rglob("*")) if p.is_file() and self._scannable(p)]
-        for file in files:
-            names = self.routes.get(file.suffix.lower())
-            if not names:
-                if self.root.is_file():
-                    logger.warning("不支持的文件类型 %s，已知后缀：%s", file.name, ", ".join(sorted(self.routes)))
-                continue
-            result = self._parse(file, names)
-            if result is None:
-                continue
-            elements, parser_name, digest = result
-            if not elements:
-                logger.warning("%s 没有解析出任何内容，已跳过", file)
-                continue
-            doc_id = file.name if self.root.is_file() else file.relative_to(self.root).as_posix()
-            metadata = {
-                "title": file.stem,
-                "path": str(file),
-                "file_type": file.suffix.lower().lstrip("."),
-                "file_hash": digest,
-                "parser": parser_name,
-            }
-            yield Document.from_elements(doc_id, elements, metadata)
+            return [self.root]
+        return [p for p in sorted(self.root.rglob("*"))
+                if p.is_file() and self._scannable(p) and self.supports(p)]
+
+    def supports(self, file: Path) -> bool:
+        return file.suffix.lower() in self.routes
+
+    def load_file(self, file: Path) -> Document | None:
+        """
+        解析一个文件。不支持的格式、所有解析器都失败、没有解析出内容时记日志并返回 None，不抛异常。
+        doc_id 是文件相对数据源根目录的路径，同名文件放在不同子目录里也不会冲突。
+        """
+        names = self.routes.get(file.suffix.lower())
+        if not names:
+            logger.warning("不支持的文件类型 %s，已知后缀：%s", file.name, ", ".join(sorted(self.routes)))
+            return None
+        result = self._parse(file, names)
+        if result is None:
+            return None
+        elements, parser_name, digest = result
+        if not elements:
+            logger.warning("%s 没有解析出任何内容，已跳过", file)
+            return None
+        doc_id = file.name if self.root.is_file() else file.relative_to(self.root).as_posix()
+        metadata = {
+            "title": file.stem,
+            "path": str(file),
+            "file_type": file.suffix.lower().lstrip("."),
+            "file_hash": digest,
+            "parser": parser_name,
+        }
+        return Document.from_elements(doc_id, elements, metadata)
 
     def _scannable(self, file: Path) -> bool:
         """目录扫描的准入检查：临时文件和超大文件直接跳过，坏文件只能隔离，不能中断整批。"""

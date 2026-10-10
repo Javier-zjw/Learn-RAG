@@ -2,7 +2,8 @@
 store.knowledge_base —— 知识库（离线链路的门面 / Facade）。
 
 这是本项目最典型的"深类"：
-  对外接口只有 add(documents) / expand(hits) / verify() / save(path) / load(path) / stats()
+  对外接口只有 add(documents) / remove(doc_ids) / expand(hits) / verify() / save(path) / load(path) / stats()，
+  外加查看用的 documents() / chunks_of(doc_id)
   对内却完成了：切分 -> 区分父子块 -> 批量向量化 -> 写片段库 -> 维护倒排索引 -> 增量更新 -> 完整性核对。
 
 上层（检索器、pipeline、评测器）永远不需要知道"先切分还是先向量化""批大小多少""BM25 和向量索引怎么保持 id 对齐"。
@@ -248,6 +249,32 @@ class KnowledgeBase:
     def get(self, chunk_id: str) -> Chunk | None:
         self._sync()
         return self._docs.get(chunk_id.rsplit("#", 1)[0], {}).get(chunk_id)
+
+    def documents(self) -> list[str]:
+        """库里全部文档的 id。"""
+        self._sync()
+        return sorted(self._docs)
+
+    def chunks_of(self, doc_id: str) -> list[Chunk]:
+        """一篇文档的全部片段（子块和父块），按切分时的顺序排列；没有这篇文档时返回空列表。"""
+        self._sync()
+        return sorted(self._docs.get(doc_id, {}).values(), key=lambda c: c.position)
+
+    def remove(self, doc_ids: Iterable[str]) -> int:
+        """
+        删除文档的全部片段（子块、父块和 BM25 倒排），返回删除的片段数。
+        源文件从目录里删掉后，库里的片段不会自己消失，要用它同步。
+        """
+        self._sync()
+        doc_ids = [doc_id for doc_id in doc_ids if doc_id in self._docs]
+        chunk_ids = [cid for doc_id in doc_ids for cid in self._docs[doc_id]]
+        self.vector_index.delete(chunk_ids)
+        self._bm25.remove(chunk_ids)
+        for cid in chunk_ids:
+            self._parents.pop(cid, None)
+        for doc_id in doc_ids:
+            del self._docs[doc_id]
+        return len(chunk_ids)
 
     def stats(self) -> dict[str, int]:
         self._sync()
