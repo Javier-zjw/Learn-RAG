@@ -242,6 +242,30 @@ class TestChromaIndex(unittest.TestCase):
             reopened = ChromaVectorIndex(path=tmp, collection="unit_test_coll")
             self.assertEqual(len(reopened), 3)
 
+    def test_full_metadata_survives_reopen(self):
+        """列表和字典列表要原样取回：早期拼成字符串截断到 500 字，图片一多资产路径就被截断。"""
+        from learn_rag.core.types import Chunk
+        from learn_rag.embedding.encoders import HashingEncoder
+        from learn_rag.store.chroma_index import ChromaVectorIndex
+
+        enc = HashingEncoder(dimension=128)
+        assets = [{"asset": f"ab/{'0' * 64}{i}.png", "kind": "image", "caption": f"图 {i}", "page": 2,
+                   "bbox": [0.1, 0.2, 0.3, 0.4]} for i in range(12)]
+        meta = {"doc_id": "d1", "kinds": ["image", "text"], "assets": assets, "page_start": 2, "parent_id": "d1#0-x"}
+        chunk = Chunk("d1#1-y", "d1", "图 1 区域营收", position=1, metadata=meta)
+        with tempfile.TemporaryDirectory() as tmp:
+            ChromaVectorIndex(path=tmp, collection="unit_meta", reset=True).add([chunk], enc.encode([chunk.text]))
+            reopened = ChromaVectorIndex(path=tmp, collection="unit_meta")
+            hit = reopened.search(enc.encode_one("营收"), 1, where={"page_start": 2})[0]
+        self.assertEqual(hit.chunk.metadata, meta)
+        self.assertEqual((hit.chunk.chunk_id, hit.chunk.position), ("d1#1-y", 1))
+
+    def test_old_collections_without_json_field_still_load(self):
+        from learn_rag.store.chroma_index import _restore_meta
+
+        self.assertEqual(_restore_meta({"doc_id": "d", "year": 2024}), {"doc_id": "d", "year": 2024})
+        self.assertEqual(_restore_meta({"doc_id": "d", "_metadata_json": "{坏的"}), {"doc_id": "d"})
+
     def test_normalized_vectors_make_spaces_equivalent(self):
         """向量已 L2 归一化时，三种度量给出相同排序。
 

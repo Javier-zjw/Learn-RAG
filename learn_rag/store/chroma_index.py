@@ -128,16 +128,16 @@ class ChromaVectorIndex(VectorIndex):
         dists = result["distances"][0]
 
         hits: list[ScoredChunk] = []
-        for cid, text, meta, dist in zip(ids, docs, metas, dists):
-            meta = dict(meta or {})
+        for cid, text, raw, dist in zip(ids, docs, metas, dists):
+            raw = dict(raw or {})
             hits.append(
                 ScoredChunk(
                     chunk=Chunk(
                         chunk_id=cid,
-                        doc_id=str(meta.get("doc_id", cid.split("#")[0])),
+                        doc_id=str(raw.get("doc_id", cid.split("#")[0])),
                         text=text or "",
-                        position=int(meta.get("position", 0)),
-                        metadata=meta,
+                        position=int(raw.get("position", 0)),
+                        metadata=_restore_meta(raw),
                     ),
                     score=_to_score(dist, self.space),
                     source="vector",
@@ -199,15 +199,36 @@ def _to_score(distance: float, space: str) -> float:
     return 1.0 / (1.0 + d)   # l2：单调递减映射到 (0, 1]
 
 
+# 完整元数据序列化后存放的字段名
+_FULL_META = "_metadata_json"
+
+
 def _flatten_meta(chunk: Chunk) -> dict[str, Any]:
-    """Chroma 的 metadata 只接受 str/int/float/bool，嵌套结构要拍平。"""
+    """
+    Chroma 的 metadata 只接受 str/int/float/bool，而块的元数据里有列表（kinds）和字典列表（assets）。
+
+    早期做法是把列表拼成逗号分隔的字符串并截断到 500 字：一个块里图片一多，后面的资产路径就被从中间截断，
+    取回后列表也变成了字符串。现在分两份存：标量字段原样放进去，供 where 过滤；完整元数据序列化成
+    一个 JSON 字段，取回时原样还原，写进去什么、读出来就是什么。
+    """
     out: dict[str, Any] = {"doc_id": chunk.doc_id, "position": chunk.position}
     for key, value in (chunk.metadata or {}).items():
         if isinstance(value, (str, int, float, bool)):
             out[key] = value
-        elif isinstance(value, (list, tuple)):
-            out[key] = ", ".join(map(str, value))[:500]
+    out[_FULL_META] = json.dumps(chunk.metadata or {}, ensure_ascii=False)
     return out
+
+
+def _restore_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """还原写入时的完整元数据。旧版本建的集合没有 JSON 字段，退回拍平后的标量字段，不需要重建索引。"""
+    meta = dict(meta or {})
+    full = meta.pop(_FULL_META, None)
+    if full is None:
+        return meta
+    try:
+        return json.loads(full)
+    except ValueError:
+        return meta
 
 
 def _to_chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
