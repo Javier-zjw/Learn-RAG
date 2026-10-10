@@ -229,6 +229,7 @@ export const api = {
   createKb: (name: string, uploadId: string, settings: Settings) =>
     request<{ kb: KbInfo; job: Job }>('POST', '/api/kbs', { name, upload_id: uploadId, settings }),
   kb: (id: string) => request<KbInfo>('GET', `/api/kbs/${id}`),
+  renameKb: (id: string, name: string) => request<KbSummary>('PATCH', `/api/kbs/${id}`, { name }),
   deleteKb: (id: string) => request<{ ok: boolean }>('DELETE', `/api/kbs/${id}`),
   addFiles: (id: string, uploadId: string) => request<Job>('POST', `/api/kbs/${id}/files`, { upload_id: uploadId }),
   rebuild: (id: string, settings?: Settings) => request<Job>('POST', `/api/kbs/${id}/rebuild`, { settings: settings ?? null }),

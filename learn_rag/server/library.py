@@ -95,7 +95,7 @@ class Library:
             raise ValueError("没有可以解析的文件：请上传 PDF、Word、PPT、Excel、Markdown、网页等支持的格式")
         now = time.time()
         manifest = {
-            "id": kb_id, "name": name.strip() or "未命名知识库", "settings": settings,
+            "id": kb_id, "name": _clean_name(name), "settings": settings,
             "created_at": now, "updated_at": now, "verify": None,
             "files": {path: _file_entry(directory / "files" / path) for path in files},
         }
@@ -115,6 +115,16 @@ class Library:
             documents.append(row)
         return {**self._summary(manifest), "documents": documents, "verify": manifest.get("verify"),
                 "job": job.snapshot() if job else None}
+
+    def rename(self, kb_id: str, name: str) -> dict[str, Any]:
+        """
+        改名。名称只用于显示：目录、Chroma 集合、文档 id 都不含名称，改名不影响任何数据，建库过程中也可以改。
+        """
+        with self._lock(kb_id):
+            manifest = self._manifest(kb_id)
+            manifest["name"] = _clean_name(name)
+            self._write_manifest(manifest)
+        return self._summary(manifest)
 
     def delete(self, kb_id: str) -> None:
         manifest = self._manifest(kb_id)
@@ -444,6 +454,12 @@ class Library:
                 entry.update(status=FAILED, message="建库被中断（服务重启），点击“重建”即可续写，已写入的不会重复向量化")
             if stale:
                 self._write_manifest(manifest)
+
+
+def _clean_name(name: str) -> str:
+    """去掉首尾空白和换行，最长 40 个字；空名称用"未命名知识库"。"""
+    name = " ".join((name or "").split())[:40]
+    return name or "未命名知识库"
 
 
 def _file_entry(path: Path) -> dict[str, Any]:

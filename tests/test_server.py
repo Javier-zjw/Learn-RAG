@@ -185,6 +185,17 @@ class TestServer(unittest.TestCase):
         self.assertIn("没有解析出任何内容", statuses["空白.md"][1])
         self.assertEqual(len(self.client.get(f"/api/kbs/{kb_id}").json()["documents"]), 4)
 
+    def test_rename_only_changes_the_display_name(self):
+        kb_id, _ = self._create({"encoder": _HASHING, "index": {"type": "flat"}})
+        before = self.client.get(f"/api/kbs/{kb_id}").json()
+        renamed = self.client.patch(f"/api/kbs/{kb_id}", json={"name": "  产品\n手册  "}).json()
+        self.assertEqual(renamed["name"], "产品 手册")
+        after = self.client.get(f"/api/kbs/{kb_id}").json()
+        self.assertEqual(after["name"], "产品 手册")
+        self.assertEqual((after["chunks"], after["documents"]), (before["chunks"], before["documents"]))
+        self.assertEqual(self.client.patch(f"/api/kbs/{kb_id}", json={"name": "  "}).json()["name"], "未命名知识库")
+        self.assertEqual(self.client.patch("/api/kbs/ffffffff", json={"name": "x"}).status_code, 404)
+
     def test_invalid_settings_are_rejected_with_reason(self):
         upload = self._upload({"a.md": "# 标题\n\n正文"})
         for settings, hint in [

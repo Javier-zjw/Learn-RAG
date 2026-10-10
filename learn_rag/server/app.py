@@ -9,6 +9,7 @@ server.app —— HTTP 接口。只做参数解析和错误码翻译，所有逻
     GET    /api/kbs                              知识库列表
     POST   /api/kbs                              新建知识库并开始建库
     GET    /api/kbs/{kb_id}                      知识库详情（参数、文档、最近的任务）
+    PATCH  /api/kbs/{kb_id}                      改名（名称只用于显示，不影响数据）
     DELETE /api/kbs/{kb_id}
     POST   /api/kbs/{kb_id}/files                追加暂存区里的文件
     POST   /api/kbs/{kb_id}/rebuild              按新参数重建
@@ -48,6 +49,10 @@ class CreateKb(BaseModel):
     name: str
     upload_id: str
     settings: dict[str, Any] = {}
+
+
+class Rename(BaseModel):
+    name: str
 
 
 class AddFiles(BaseModel):
@@ -135,6 +140,10 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
     @app.get("/api/kbs/{kb_id}")
     def kb_info(kb_id: str) -> dict[str, Any]:
         return library.info(kb_id)
+
+    @app.patch("/api/kbs/{kb_id}")
+    def rename_kb(kb_id: str, body: Rename) -> dict[str, Any]:
+        return library.rename(kb_id, body.name)
 
     @app.delete("/api/kbs/{kb_id}")
     def delete_kb(kb_id: str) -> dict[str, Any]:

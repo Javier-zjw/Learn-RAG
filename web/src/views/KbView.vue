@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshRight, Delete, Search, View } from '@element-plus/icons-vue'
+import { Plus, RefreshRight, Delete, Search, View, EditPen } from '@element-plus/icons-vue'
 import { api, watchJob, type DocRow, type Job, type KbInfo, type Settings } from '../api'
 import { STATUS, bytes, chunkerSummary, clone, encoderSummary, settingsError, timeAgo, typeGroup } from '../format'
 import { loadEnv, refreshKbs, store } from '../store'
@@ -110,6 +110,31 @@ async function removeKb() {
   }
 }
 
+// ---------------------------------------------------------------- 改名（名称只用于显示，随时可改）
+const editing = ref(false)
+const draftName = ref('')
+const nameInput = ref<{ focus: () => void; select: () => void }>()
+async function startRename() {
+  draftName.value = info.value?.name ?? ''
+  editing.value = true
+  await nextTick()
+  nameInput.value?.focus()
+  nameInput.value?.select()
+}
+async function saveRename() {
+  if (!editing.value) return
+  editing.value = false
+  const name = draftName.value.trim()
+  if (!info.value || !name || name === info.value.name) return
+  try {
+    const summary = await api.renameKb(kbId.value, name)
+    info.value.name = summary.name
+    refreshKbs()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  }
+}
+
 // ---------------------------------------------------------------- 追加文件
 const appendOpen = ref(false)
 const appendId = ref('')
@@ -167,7 +192,12 @@ async function submitRebuild() {
     <template v-else-if="info">
       <div class="page-head">
         <div class="head-main">
-          <h1>{{ info.name }}</h1>
+          <el-input v-if="editing" ref="nameInput" v-model="draftName" maxlength="40" size="large" class="name-edit"
+                    @keyup.enter="saveRename" @keyup.esc="editing = false" @blur="saveRename" />
+          <h1 v-else class="title" title="点击修改名称" @click="startRename">
+            <span>{{ info.name }}</span>
+            <el-icon class="edit-icon"><EditPen /></el-icon>
+          </h1>
           <div class="tags">
             <el-tag effect="plain" round>{{ chunkerSummary(info.settings) }}</el-tag>
             <el-tag effect="plain" round>{{ encoderSummary(info.settings) }}</el-tag>
@@ -275,7 +305,13 @@ async function submitRebuild() {
 
 <style scoped>
 .head-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.head-main h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-icon { flex: none; font-size: 16px; color: var(--text-3); opacity: 0; transition: opacity 0.15s ease, color 0.15s ease; }
+.title:hover .edit-icon { opacity: 1; }
+.title:hover .edit-icon:hover { color: var(--primary); }
+.name-edit { max-width: 420px; }
+.name-edit :deep(.el-input__inner) { font-size: 18px; font-weight: 600; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .actions { display: flex; gap: 4px; flex: none; }
 .stats {
