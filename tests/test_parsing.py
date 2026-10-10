@@ -374,7 +374,8 @@ class TestExternalAdapters(unittest.TestCase):
         with patch("learn_rag.parsing.external.subprocess.run", side_effect=fake_run) as run:
             elements = MinerUParser().parse(Path("a.pdf"))
         cmd = run.call_args[0][0]
-        self.assertEqual(cmd[:3], ["mineru-kit", "parse", "a.pdf"])
+        # 装了 MinerU 的机器上命令是完整路径（PATH 或 MINERU_PYTHON_ENV/bin 下找到的）
+        self.assertEqual((Path(cmd[0]).name, *cmd[1:3]), ("mineru-kit", "parse", "a.pdf"))
         self.assertIn("zip", cmd)
         self.assertIn("standard", cmd)
         self.assertEqual(len(elements), 10)

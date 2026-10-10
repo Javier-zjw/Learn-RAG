@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 
 from .core.config import load_config
@@ -268,17 +269,34 @@ def _print_verify(report: dict) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    """启动可视化建库服务：上传文件、选参数、建库、查看分块都在页面上完成。"""
+    """
+    一条命令启动全部：需要时先构建前端，后台启动本机 MinerU（有 .mineru.env 时），再启动页面服务。
+    Ctrl+C 或关闭终端时一并关闭 MinerU。参数、模型、解析器都在页面上选，这里不需要任何参数。
+    """
     try:
         import uvicorn
 
         from .server.app import create_app
+        from .server.frontend import ensure_built
+        from .server.mineru_service import MinerUService
     except ImportError as exc:
         raise SystemExit(f"启动页面服务需要 fastapi 和 uvicorn：pip install -e \".[web]\"（{exc}）") from None
-    app = create_app(args.data)
-    frontend = "已托管前端页面" if any(r.path == "/{path:path}" for r in app.routes) \
-        else "未找到 web/dist，先在 web/ 下运行 npm install && npm run build，开发时用 npm run dev"
-    print(f"[页面服务] http://{args.host}:{args.port}　数据目录 {args.data}　{frontend}")
+    import atexit
+    import signal
+
+    print(f"[前端] {ensure_built()}")
+    mineru = MinerUService()
+    # 正常退出时由服务的生命周期关闭 MinerU；atexit 兜底异常退出，stop 可以重复调用
+    atexit.register(mineru.stop)
+    # 直接关掉终端窗口时进程收到的是 SIGHUP，默认会立即退出、来不及关 MinerU；转成 SIGTERM 走正常退出流程
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    app = create_app(args.data, mineru=mineru)
+    print(f"[页面服务] http://{args.host}:{args.port}　数据目录 {args.data}　按 Ctrl+C 退出（MinerU 会一并关闭）")
+    if mineru.env_file.is_file():
+        print("[MinerU] 后台启动中，就绪前提交的 PDF 建库任务会先等它；状态见页面“模型与环境”")
+    else:
+        print("[MinerU] 未找到 .mineru.env，不启动；PDF 用 PyMuPDF 解析")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

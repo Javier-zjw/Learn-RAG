@@ -14,6 +14,7 @@ import shutil
 from typing import Any
 
 from ..core.config import load_env
+from ..parsing.external import find_mineru_command
 
 # 页面上展示配置状态的环境变量（只报是否已配置）
 _KEYS = {
@@ -44,7 +45,8 @@ def _installed(module: str) -> bool:
 
 
 def has_mineru() -> bool:
-    return shutil.which("mineru-kit") is not None
+    """PATH 上或 .mineru.env 的 MINERU_PYTHON_ENV 里有 mineru-kit。"""
+    return find_mineru_command() is not None
 
 
 def has_docling() -> bool:
@@ -91,7 +93,7 @@ def parser_choices() -> dict[str, list[dict[str, Any]]]:
         ".pdf": [
             {"value": ["pdf"], "label": "PyMuPDF（快，适合有文字层的 PDF）", "available": True},
             {"value": ["mineru", "pdf"], "label": "MinerU → PyMuPDF（版面、表格、扫描件更准）",
-             "available": mineru, "note": "" if mineru else "未找到 mineru-kit 命令"},
+             "available": mineru, "note": "" if mineru else "未找到 mineru-kit（PATH 和 MINERU_PYTHON_ENV 下都没有）"},
             {"value": ["docling", "pdf"], "label": "Docling → PyMuPDF",
              "available": docling, "note": "" if docling else "未安装 docling"},
         ],

@@ -35,6 +35,29 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # MinerU 4.x 中可以选择质量档位（flash/basic/standard/advanced）的输入格式
 _TIERED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".jp2"}
+# .mineru.env 没写 MINERU_PYTHON_ENV 时的默认环境，和 scripts/start_mineru.sh 保持一致
+_DEFAULT_MINERU_PYTHON_ENV = "/opt/anaconda3/envs/langchain_env"
+
+
+def read_mineru_env(env_file: str | None = ".mineru.env") -> dict[str, str]:
+    """读取 .mineru.env（相对路径按项目根解析），文件不存在时返回空字典。"""
+    if not env_file:
+        return {}
+    path = Path(env_file) if Path(env_file).is_absolute() else _PROJECT_ROOT / env_file
+    return _read_env_file(path) if path.is_file() else {}
+
+
+def find_mineru_command(command: str = "mineru-kit", env: dict[str, str] | None = None) -> str | None:
+    """
+    找到 MinerU 命令的完整路径：先在 PATH 里找，再到 MINERU_PYTHON_ENV/bin 下找。
+    MinerU 依赖很重，常装在单独的 Python 环境里，不在当前环境的 PATH 上；启动脚本用的也是 MINERU_PYTHON_ENV。
+    """
+    env = env if env is not None else {**os.environ, **read_mineru_env()}
+    found = shutil.which(command, path=env.get("PATH"))
+    if found:
+        return found
+    candidate = Path(env.get("MINERU_PYTHON_ENV") or _DEFAULT_MINERU_PYTHON_ENV) / "bin" / command
+    return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
 
 
 @registry.register("parser", "mineru")
@@ -82,6 +105,7 @@ class MinerUParser(DocumentParser):
         if not default_home.is_absolute():
             default_home = _PROJECT_ROOT / default_home
         self.env = self._runtime_env(env_file, default_home)
+        self.command = find_mineru_command(command, self.env) or command
         self.models_dir = Path(self.env["MINERU_HOME"])
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,11 +118,10 @@ class MinerUParser(DocumentParser):
         """
         env = dict(os.environ)
         source = "未找到 .mineru.env，使用 shell 环境变量和默认值"
-        if env_file:
-            path = Path(env_file) if Path(env_file).is_absolute() else _PROJECT_ROOT / env_file
-            if path.is_file():
-                env.update(_read_env_file(path))
-                source = f"已加载 {path}"
+        values = read_mineru_env(env_file)
+        if values:
+            env.update(values)
+            source = f"已加载 {env_file}"
         defaults = {
             "MINERU_HOME": str(default_home.resolve()),
             "MINERU_MODEL_SOURCE": "modelscope",

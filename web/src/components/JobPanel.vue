@@ -70,6 +70,10 @@ function stepIndex(f: FileProgress): number {
         <span v-else class="bad-text">完整性检查发现 {{ job.verify.problems.length }} 个问题</span>
       </template>
     </div>
+    <Transition name="slide">
+      <el-alert v-if="job.notice" :title="job.notice" :type="running ? 'info' : 'warning'" :closable="false"
+                show-icon class="alert" />
+    </Transition>
     <el-alert v-if="job.error" :title="job.error" type="error" :closable="false" show-icon class="alert" />
     <el-alert v-if="job.verify && !job.verify.ok" type="warning" :closable="false" class="alert">
       <div v-for="p in job.verify.problems" :key="p">{{ p }}</div>

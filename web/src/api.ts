@@ -38,6 +38,7 @@ export interface EnvReport {
   parsers: Record<string, ParserChoice[]>
   ocr: boolean
   defaults: Settings
+  mineru: { state: 'disabled' | 'starting' | 'ready' | 'failed' | 'stopped'; message: string; url: string } | null
 }
 
 export interface StagedFile {
@@ -80,6 +81,7 @@ export interface Job {
   kind: 'build' | 'append' | 'rebuild'
   status: 'queued' | 'running' | 'done' | 'failed'
   error: string
+  notice: string
   verify: Verify | null
   files: FileProgress[]
   counts: Record<FileStatus, number>

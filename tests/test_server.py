@@ -235,5 +235,140 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(_overlap("结尾。", "。开头"), 0)
 
 
+def _script(path: Path, body: str) -> Path:
+    path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    return path
+
+
+@unittest.skipUnless(shutil.which("bash"), "没有 bash")
+class TestMinerUService(unittest.TestCase):
+    """用假的启动 / 停止脚本代替 scripts/start_mineru.sh、stop_mineru.sh。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.env = self.tmp / ".mineru.env"
+        self.env.write_text("MINERU_MODEL_VLM_SERVER_URL=http://127.0.0.1:30000\n", encoding="utf-8")
+        self.log = self.tmp / "calls.log"
+        self.stop = _script(self.tmp / "stop.sh", f"echo stop >> {self.log}\necho 已停止 VLM 服务\n")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _service(self, start_body: str):
+        from learn_rag.server.mineru_service import MinerUService
+
+        start = _script(self.tmp / "start.sh", f"echo start >> {self.log}\n" + start_body)
+        return MinerUService(env_file=self.env, start_script=start, stop_script=self.stop)
+
+    def _calls(self) -> list[str]:
+        return self.log.read_text().split() if self.log.exists() else []
+
+    def test_starts_in_background_and_stops_on_exit(self):
+        service = self._service("sleep 0.3\necho MinerU 已就绪\n")
+        service.start()
+        self.assertEqual(service.state, "starting")            # 不阻塞页面服务启动
+        self.assertTrue(service.wait(10))
+        self.assertEqual(service.status()["url"], "http://127.0.0.1:30000")
+        service.stop()
+        service.stop()                                          # 重复调用只关一次
+        self.assertEqual(self._calls(), ["start", "stop"])
+        self.assertEqual(service.state, "stopped")
+
+    def test_failure_is_reported_with_script_output(self):
+        service = self._service("echo 模型目录不存在 >&2\nexit 1\n")
+        service.start()
+        self.assertFalse(service.wait(10))
+        self.assertEqual(service.state, "failed")
+        self.assertIn("模型目录不存在", service.message)
+
+    def test_stop_during_startup_kills_the_start_script(self):
+        service = self._service("sleep 30\n")
+        service.start()
+        service.stop()
+        self.assertFalse(service.wait(5))                        # 启动脚本连同子进程被结束，不会卡住
+        self.assertTrue(service._done.is_set())
+        self.assertEqual(service.state, "stopped")
+        self.assertIn("stop", self._calls())
+
+    def test_without_env_file_nothing_runs(self):
+        self.env.unlink()
+        service = self._service("echo 不该运行\n")
+        service.start()
+        service.stop()
+        self.assertEqual(service.state, "disabled")
+        self.assertEqual(self._calls(), [])
+
+    @unittest.skipUnless(_has("fastapi") and _has("httpx") and _has("multipart"), "未安装 fastapi")
+    def test_app_lifespan_starts_and_stops_mineru(self):
+        from fastapi.testclient import TestClient
+
+        from learn_rag.server.app import create_app
+
+        service = self._service("echo MinerU 已就绪\n")
+        data = tempfile.mkdtemp()
+        try:
+            with TestClient(create_app(data, mineru=service)) as client:
+                self.assertTrue(service.wait(10))
+                self.assertEqual(client.get("/api/env").json()["mineru"]["state"], "ready")
+            self.assertEqual(self._calls(), ["start", "stop"])   # 服务退出时一并关闭
+        finally:
+            shutil.rmtree(data, ignore_errors=True)
+
+    @unittest.skipUnless(_has("fastapi"), "未安装 fastapi")
+    def test_build_waits_for_mineru_when_it_is_starting(self):
+        from learn_rag.server.jobs import Job
+        from learn_rag.server.library import Library
+
+        service = self._service("sleep 0.5\necho MinerU 已就绪\n")
+        service.start()
+        data = tempfile.mkdtemp()
+        try:
+            library = Library(data, mineru=service)
+            job = Job(id="j", kb_id="k", kind="build", files=[])
+            library._wait_for_mineru(job, {"parsing": {"parsers": {".pdf": ["mineru", "pdf"]}}})
+            self.assertEqual(service.state, "ready")              # 返回时 MinerU 已经就绪
+            self.assertEqual(job.notice, "")
+            self.assertGreaterEqual(job.version, 2)              # 等待期间页面能看到提示
+        finally:
+            service.stop()
+            shutil.rmtree(data, ignore_errors=True)
+
+
+class TestMinerUCommand(unittest.TestCase):
+    def test_found_in_separate_python_env(self):
+        from learn_rag.parsing.external import find_mineru_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kit = Path(tmp) / "bin" / "mineru-kit"
+            kit.parent.mkdir()
+            kit.write_text("#!/bin/sh\n")
+            kit.chmod(0o755)
+            self.assertEqual(find_mineru_command(env={"PATH": "/nonexistent", "MINERU_PYTHON_ENV": tmp}), str(kit))
+            self.assertIsNone(find_mineru_command(env={"PATH": "/nonexistent", "MINERU_PYTHON_ENV": tmp + "/x"}))
+
+
+class TestFrontendBuild(unittest.TestCase):
+    def test_skips_when_up_to_date_and_degrades_without_npm(self):
+        import os
+        import time
+        from unittest.mock import patch
+
+        from learn_rag.server.frontend import ensure_built
+
+        with tempfile.TemporaryDirectory() as tmp:
+            web = Path(tmp)
+            (web / "src").mkdir()
+            (web / "src" / "main.ts").write_text("x")
+            with patch("learn_rag.server.frontend.shutil.which", return_value=None):
+                self.assertIn("无法构建前端", ensure_built(web))         # 没有构建、也没有 npm
+                (web / "dist").mkdir()
+                (web / "dist" / "index.html").write_text("<html>")
+                future = time.time() + 10
+                os.utime(web / "dist" / "index.html", (future, future))
+                self.assertEqual(ensure_built(web), "前端已是最新")
+                os.utime(web / "src" / "main.ts", (future + 10, future + 10))
+                self.assertIn("继续使用上次的构建", ensure_built(web))    # 源码更新了但没有 npm
+
+
 if __name__ == "__main__":
     unittest.main()

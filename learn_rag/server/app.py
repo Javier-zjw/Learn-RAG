@@ -18,22 +18,25 @@ server.app —— HTTP 接口。只做参数解析和错误码翻译，所有逻
     GET    /api/jobs/{job_id}                    任务快照
     GET    /api/jobs/{job_id}/events             任务进度（SSE，状态变化时推送快照，任务结束后关闭）
 
-构建好的前端（web/dist）存在时一并托管，用户只需要启动这一个服务。
+构建好的前端（web/dist）存在时一并托管；传入 MinerUService 时随服务启停 MinerU。用户只需要启动这一个服务。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import environment
 from .library import Busy, Library, NotFound
+from .mineru_service import MinerUService
 from .recommend import profile, recommend
 
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -53,9 +56,19 @@ class Rebuild(BaseModel):
     settings: dict[str, Any] | None = None
 
 
-def create_app(data_dir: str | Path = "data/web") -> FastAPI:
-    library = Library(data_dir)
-    app = FastAPI(title="Learn-RAG", docs_url="/api/docs", openapi_url="/api/openapi.json")
+def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None = None) -> FastAPI:
+    """mineru 不为空时，服务启动时在后台启动 MinerU，服务退出时把它一并关闭。"""
+    library = Library(data_dir, mineru=mineru)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if mineru:
+            mineru.start()
+        yield
+        if mineru:
+            await run_in_threadpool(mineru.stop)
+
+    app = FastAPI(title="Learn-RAG", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.state.library = library
 
     @app.exception_handler(NotFound)
@@ -77,7 +90,7 @@ def create_app(data_dir: str | Path = "data/web") -> FastAPI:
     # ---------------------------------------------------------------- 环境
     @app.get("/api/env")
     def env() -> dict[str, Any]:
-        return environment.report()
+        return {**environment.report(), "mineru": mineru.status() if mineru else None}
 
     # ---------------------------------------------------------------- 上传暂存区
     @app.post("/api/uploads")

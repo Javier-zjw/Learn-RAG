@@ -35,6 +35,7 @@ from ..parsing.source import FileSource
 from ..pipeline.rag import RagPipeline
 from . import environment
 from .chunk_view import document_view
+from .mineru_service import STARTING, MinerUService
 from .jobs import DONE, EMBEDDING, FAILED, PARSING, SKIPPED, WAITING, FileProgress, Job, JobRunner, capture_warnings
 from .uploads import Staging, safe_relative
 
@@ -62,8 +63,9 @@ class Busy(RuntimeError):
 
 
 class Library:
-    def __init__(self, root: str | Path, runner: JobRunner | None = None) -> None:
+    def __init__(self, root: str | Path, runner: JobRunner | None = None, mineru: MinerUService | None = None) -> None:
         self.root = Path(root)
+        self.mineru = mineru
         self.kbs_dir = self.root / "kbs"
         self.kbs_dir.mkdir(parents=True, exist_ok=True)
         self.staging = Staging(self.root / "uploads")
@@ -263,6 +265,7 @@ class Library:
         with self._lock(kb_id):
             pipe = self._pipeline(kb_id, reset=reset)
             cfg = self._config(kb_id, self._manifest(kb_id)["settings"])
+        self._wait_for_mineru(job, cfg)
         files_dir = self.kbs_dir / kb_id / "files"
         source = FileSource(str(files_dir), **cfg["parsing"])
         for progress in job.files:
@@ -276,6 +279,17 @@ class Library:
             manifest["verify"] = job.verify
             manifest["updated_at"] = time.time()
             self._write_manifest(manifest)
+        job.touch()
+
+    def _wait_for_mineru(self, job: Job, cfg: dict[str, Any]) -> None:
+        """要用 MinerU 解析而它还在启动时先等它就绪，否则这批 PDF 会全部退回 PyMuPDF。"""
+        uses_mineru = any("mineru" in chain for chain in cfg["parsing"]["parsers"].values())
+        if not (self.mineru and uses_mineru and self.mineru.state == STARTING):
+            return
+        job.notice = "等待 MinerU 服务就绪（首次启动要加载模型）……"
+        job.touch()
+        ready = self.mineru.wait(self.mineru.timeout)
+        job.notice = "" if ready else self.mineru.message
         job.touch()
 
     def _process(self, job: Job, progress: FileProgress, pipe: RagPipeline, source: FileSource,

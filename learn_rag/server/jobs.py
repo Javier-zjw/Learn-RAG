@@ -44,6 +44,7 @@ class Job:
     files: list[FileProgress]
     status: str = "queued"                      # queued / running / done / failed
     error: str = ""
+    notice: str = ""                            # 任务级提示，如"等待 MinerU 服务就绪"
     verify: dict[str, Any] | None = None
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
