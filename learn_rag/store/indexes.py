@@ -24,7 +24,7 @@ import numpy as np
 
 from ..core.interfaces import VectorIndex
 from ..core.registry import registry
-from ..core.text import index_tokens
+from ..core.text import code_tokens, index_tokens
 from ..core.types import Chunk, ScoredChunk
 
 
@@ -172,7 +172,11 @@ def _read_jsonl(path: Path) -> list[Chunk]:
 
 
 def _match(metadata: dict[str, Any], where: dict[str, Any]) -> bool:
-    """极简元数据过滤：等值或 in 列表。够用且可预测。"""
+    """
+    极简元数据过滤：等值或 in 列表。够用且可预测。
+    flat 向量索引和 BM25 都用它；Chroma 把同样的语法翻译成 $eq / $in（见 chroma_index._to_chroma_where），
+    三处语义一致：只能过滤标量字段，键不存在时不匹配。
+    """
     for key, expected in where.items():
         actual = metadata.get(key)
         if isinstance(expected, (list, tuple, set)):
@@ -192,6 +196,7 @@ class BM25Index:
       - b  惩罚长文档（长文档天然更容易含有查询词）
 
     它不单独落盘：知识库打开时从片段库重建，和向量索引永远是同一批片段。
+    切词在通用切词之外加上整体的编号（core.text.code_tokens），合同号、订单号、型号能精确命中（见 _query_terms）。
     删除只把位置标记为空（文档更新时每篇都要删旧片段，每次都重建倒排表太慢），
     空位超过一半时再整体压缩一次。
     """
@@ -210,7 +215,7 @@ class BM25Index:
         self.remove([c.chunk_id for c in chunks])
         for chunk in chunks:
             slot = len(self._chunks)
-            tokens = index_tokens(chunk.text)
+            tokens = _terms(chunk.text)
             freq: dict[str, int] = defaultdict(int)
             for tok in tokens:
                 freq[tok] += 1
@@ -244,18 +249,21 @@ class BM25Index:
             for tok in freq:
                 self._postings[tok].append(slot)
 
-    def search(self, query: str, top_k: int) -> list[ScoredChunk]:
+    def search(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
+        """where 与向量索引的元数据过滤语法相同（等值或 in 列表），在取 top_k 之前过滤，过滤后仍能取够 top_k 条。"""
         n = len(self._slots)
         if not n:
             return []
         avgdl = self._total_length / n
         scores: dict[int, float] = defaultdict(float)
-        for term in set(index_tokens(query)):
+        for term in set(_query_terms(query)):
             posting = [slot for slot in self._postings.get(term, ()) if self._chunks[slot] is not None]
             if not posting:
                 continue
             idf = math.log(1 + (n - len(posting) + 0.5) / (len(posting) + 0.5))
             for slot in posting:
+                if where and not _match(self._chunks[slot].metadata, where):
+                    continue
                 tf = self._freqs[slot][term]
                 denom = tf + self.k1 * (1 - self.b + self.b * self._lengths[slot] / max(avgdl, 1e-9))
                 scores[slot] += idf * tf * (self.k1 + 1) / denom
@@ -264,3 +272,21 @@ class BM25Index:
 
     def __len__(self) -> int:
         return len(self._slots)
+
+
+def _terms(text: str) -> list[str]:
+    """建索引的切词：通用切词（中文单字和二元组、英文单词、数字）加上整体的编号。编号拆出的碎片也保留，搜编号的一部分（0386）仍能命中。"""
+    return index_tokens(text) + code_tokens(text)
+
+
+def _query_terms(query: str) -> list[str]:
+    """
+    查询的切词：查询里出现完整编号时，用编号整体代替它拆出来的碎片。
+
+    只加整体编号不够：XH-2025-0386 拆出的 xh、2025 在销售数据的订单号和日期里反复出现，
+    长度惩罚又压低了内容较长的合同片段，碎片的得分仍会把销售数据排在合同前面。
+    用户输入完整编号时要的是精确匹配，碎片只是噪声；没写完整编号（只搜 0386）时照常按碎片匹配。
+    """
+    codes = code_tokens(query)
+    pieces = {piece for code in codes for piece in index_tokens(code)}
+    return [t for t in index_tokens(query) if t not in pieces] + codes

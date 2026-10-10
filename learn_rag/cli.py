@@ -96,7 +96,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
         print(f"[索引] {stats}")
     else:
         _load_index(pipe, cfg)
-    result = pipe.answer(args.question)
+    result = pipe.answer(args.question, where=_parse_where(args.where))
     if result.extras.get("mode") == "wiki":
         print(f"\n===== Wiki 状态 =====")
         print(f"  知识库共 {result.extras['wiki_pages_total']} 页，本次翻阅 {result.extras['pages_loaded']} 页，"
@@ -116,6 +116,19 @@ def cmd_ask(args: argparse.Namespace) -> None:
         for line in _provenance(ctx.chunk.metadata, asset_dirs):
             print(f"     {line}")
     print(f"\n耗时：{ {k: round(v, 3) for k, v in result.timings.items()} }")
+
+
+def _parse_where(text: str | None) -> dict | None:
+    """--where 的 JSON 过滤条件，如 '{"file_type": "pdf"}' 或 '{"title": ["文档1", "文档2"]}'。"""
+    if not text:
+        return None
+    try:
+        where = json.loads(text)
+    except ValueError as exc:
+        raise SystemExit(f"--where 不是合法的 JSON：{exc}\n  示例：--where '{{\"file_type\": \"pdf\"}}'") from None
+    if not isinstance(where, dict):
+        raise SystemExit("--where 必须是 JSON 对象，如 '{\"file_type\": \"pdf\"}'")
+    return where or None
 
 
 def _load_index(pipe: RagPipeline, cfg: dict) -> None:
@@ -273,6 +286,7 @@ def main() -> None:
     p_ask.add_argument("--corpus", help="jsonl 语料，用于现场建索引（已 build 过则不用传）")
     p_ask.add_argument("--docs", help="文档目录或文件（PDF/Word/PPT/Excel/网页/图片），解析后现场建索引")
     p_ask.add_argument("-q", "--question", required=True)
+    p_ask.add_argument("--where", help='元数据过滤（JSON），作用于每一路召回，如 \'{"file_type": "pdf"}\'；值为列表时表示任一匹配')
     p_ask.add_argument("--mode", default="pipeline", choices=["pipeline", "agentic", "wiki"],
                        help="pipeline=传统固定管线，agentic=自主决策 agent，wiki=知识编译（LLM Wiki）")
     p_ask.set_defaults(func=cmd_ask)

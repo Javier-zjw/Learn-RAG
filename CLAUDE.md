@@ -91,6 +91,11 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
 - 改动存储或向量化逻辑后，用 `learn-rag build` 连续运行两次（第二次应全部跳过），再运行 `learn-rag verify --sample <子块数>` 全量核对向量能否被正确检索。
 - 后续改进方向和顺序记录在 README“向量化与 Chroma 存储 → 后续改进”，在本分支（`feature/embedding-store`）上按顺序推进。
 
+## 召回（`learn_rag/retrieval/`）
+
+- **过滤条件按查询传递**：`Retriever.retrieve(query, top_k, *, where=None)`。组合型检索器（混合、查询改写）必须把 `where` 原样传给每一路；新增召回通道必须实现过滤，语法与 `store/indexes.py` 的 `_match` 一致（等值或 in 列表，只能过滤标量字段）。
+- **BM25 切词**：建索引用 `_terms`（通用切词 + 整体编号 + 编号碎片），查询用 `_query_terms`（有完整编号时以编号整体代替碎片）。改 BM25 切词不影响向量，已有索引打开时自动按新规则重建；不要改 `index_tokens`，它同时决定 Hashing 向量，改了必须重建索引。
+
 ## 代码风格
 
 - 注释与 docstring 使用中文，重点解释「为什么这样设计」和容易踩的坑，与现有代码密度保持一致。

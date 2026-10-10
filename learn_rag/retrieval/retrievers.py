@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import Any
 
 from ..core.interfaces import LLM, QueryTransformer, Retriever
 from ..core.registry import registry
@@ -26,28 +27,33 @@ from ..store.knowledge_base import KnowledgeBase
 class VectorRetriever(Retriever):
     """
     稠密向量召回：把问题编码成向量，在向量空间找最近邻
+
+    配置里的 where 是这一路固定的过滤条件，和每次查询传入的 where 合并（同名键以查询为准）。
     """
 
     def __init__(self, kb: KnowledgeBase, where: dict | None = None) -> None:
         self.kb = kb
         self.where = where
 
-    def retrieve(self, query: str, top_k: int) -> list[ScoredChunk]:
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
         vector = self.kb.encoder.encode_one(query, is_query=True)
-        return self.kb.vector_index.search(vector, top_k, where=self.where)
+        return self.kb.vector_index.search(vector, top_k, where=_merge(self.where, where))
 
 
 @registry.register("retriever", "bm25")
 class BM25Retriever(Retriever):
     """
     稀疏关键词召回。对专有名词、型号、编号、罕见词特别有效
+
+    过滤语法和向量召回相同，配置里固定的 where 与查询传入的 where 合并。
     """
 
-    def __init__(self, kb: KnowledgeBase) -> None:
+    def __init__(self, kb: KnowledgeBase, where: dict | None = None) -> None:
         self.kb = kb
+        self.where = where
 
-    def retrieve(self, query: str, top_k: int) -> list[ScoredChunk]:
-        return self.kb.bm25_index.search(query, top_k)
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
+        return self.kb.bm25_index.search(query, top_k, where=_merge(self.where, where))
 
 
 @registry.register("retriever", "hybrid")
@@ -74,14 +80,14 @@ class HybridRetriever(Retriever):
         self.rrf_k = rrf_k
         self.overfetch = overfetch
 
-    def retrieve(self, query: str, top_k: int) -> list[ScoredChunk]:
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
         fetch = max(top_k, int(top_k * self.overfetch))
         fused: dict[str, float] = defaultdict(float)
         pool: dict[str, ScoredChunk] = {}
         debug: dict[str, dict[str, float]] = defaultdict(dict)
 
         for weight, channel in zip(self.weights, self.channels):
-            for rank, hit in enumerate(channel.retrieve(query, fetch)):
+            for rank, hit in enumerate(channel.retrieve(query, fetch, where=where)):
                 fused[hit.chunk.chunk_id] += weight / (self.rrf_k + rank + 1)
                 pool.setdefault(hit.chunk.chunk_id, hit)
                 debug[hit.chunk.chunk_id][hit.source] = hit.score
@@ -106,10 +112,10 @@ class TransformedRetriever(Retriever):
         self.inner = inner
         self.transformer = transformer
 
-    def retrieve(self, query: str, top_k: int) -> list[ScoredChunk]:
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
         best: dict[str, ScoredChunk] = {}
         for variant in self.transformer.transform(query):
-            for hit in self.inner.retrieve(variant, top_k):
+            for hit in self.inner.retrieve(variant, top_k, where=where):
                 prev = best.get(hit.chunk.chunk_id)
                 if prev is None or hit.score > prev.score:
                     best[hit.chunk.chunk_id] = hit
@@ -165,3 +171,9 @@ class HydeTransformer(QueryTransformer):
             return [query]
 
         return [query, doc] if self.keep_original else [doc]
+
+
+def _merge(fixed: dict | None, per_query: dict | None) -> dict | None:
+    """配置里固定的过滤条件和这次查询的条件合并，同名键以查询为准；都没有时返回 None（不过滤）。"""
+    merged = {**(fixed or {}), **(per_query or {})}
+    return merged or None

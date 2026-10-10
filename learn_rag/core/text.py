@@ -56,6 +56,26 @@ def index_tokens(text: str) -> list[str]:
     return tokens + grams
 
 
+# 编号：字母数字段，段之间可以用 - _ / . 连接，如 XH-2025-0386、SKU_12/A、v2.3.1、GPT4o、2025-10-08
+_CODE_RE = re.compile(r"[a-z0-9]+(?:[-_/.][a-z0-9]+)*")
+
+
+def code_tokens(text: str) -> list[str]:
+    """
+    整体保留的编号，供关键词检索使用：合同号、订单号、型号、版本号、日期。
+
+    tokenize 会把 XH-2025-0386 拆成 xh、2025、0386 三个词：订单号里反复出现的 xh、日期里反复出现的 2025
+    会压过真正有区分度的 0386，搜编号时反而排不到目标文档。把编号整体也作为一个词，它在语料里通常只出现
+    在少数片段中，idf 很高，精确匹配时能稳稳排到前面。
+    只保留含数字、并且含字母或连接符的片段：纯数字（2025）和纯字母单词已经由 tokenize 产出，不必重复。
+    """
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    return [
+        m for m in _CODE_RE.findall(text)
+        if any(ch.isdigit() for ch in m) and (any(ch.isalpha() for ch in m) or any(ch in "-_/." for ch in m))
+    ]
+
+
 def _is_cjk(token: str) -> bool:
     return len(token) == 1 and re.match(rf"[{_CJK}]", token) is not None
 

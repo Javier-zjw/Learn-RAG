@@ -133,10 +133,14 @@ class Retriever(ABC):
 
     全系统最重要的通用接口。向量检索、BM25、混合检索、带查询改写的检索器、甚至"调用远程搜索引擎"都实现它，
     因此它们可以互相嵌套、任意组合。
+
+    where 是这一次查询的元数据过滤条件（如 {"file_type": "pdf"}、{"department": ["财务部", "法务部"]}），
+    语法为等值或 in 列表。组合型检索器必须把它原样传给每一路，保证各路召回的范围一致：
+    否则向量那一路过滤了、关键词那一路没过滤，范围之外的文档仍会经融合混进结果。
     """
 
     @abstractmethod
-    def retrieve(self, query: str, top_k: int) -> list[ScoredChunk]: ...
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]: ...
 
 class Reranker(ABC):
     """

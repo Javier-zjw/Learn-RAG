@@ -50,12 +50,13 @@ class RagPipeline:
     def index(self, documents: Iterable[Document], *, progress: bool = False) -> dict[str, int]:
         return self.kb.add(documents, progress=progress)
 
-    def answer(self, question: str, *, top_k: int | None = None) -> RagResult:
+    def answer(self, question: str, *, top_k: int | None = None, where: dict[str, Any] | None = None) -> RagResult:
         """
         一次问答。返回值带齐了答案、证据、各阶段耗时 —— 评测与排障都靠它
+        where 是元数据过滤条件（如 {"file_type": "pdf"}），作用于每一路召回
         """
         timings: dict[str, float] = {}
-        contexts = self._contexts(question, top_k or self.top_k, timings)
+        contexts = self._contexts(question, top_k or self.top_k, timings, where)
 
         with Timer(timings, "generate"):
             answer = self.generator.generate(question, contexts)
@@ -63,16 +64,18 @@ class RagPipeline:
         timings["total"] = sum(timings.values())
         return RagResult(question=question, answer=answer, contexts=contexts, timings=timings)
 
-    def retrieve_only(self, question: str, *, top_k: int | None = None) -> RagResult:
+    def retrieve_only(self, question: str, *, top_k: int | None = None,
+                      where: dict[str, Any] | None = None) -> RagResult:
         """
         只跑检索，不调生成 —— 调检索参数时用它，能省掉 90% 的时间和费用
         """
         timings: dict[str, float] = {}
-        contexts = self._contexts(question, top_k or self.top_k, timings)
+        contexts = self._contexts(question, top_k or self.top_k, timings, where)
         timings["total"] = sum(timings.values())
         return RagResult(question=question, answer=Answer(text=""), contexts=contexts, timings=timings)
 
-    def _contexts(self, question: str, top_k: int, timings: dict[str, float]) -> list[ScoredChunk]:
+    def _contexts(self, question: str, top_k: int, timings: dict[str, float],
+                  where: dict[str, Any] | None = None) -> list[ScoredChunk]:
         """
         召回 -> 精排 -> 父块展开。
 
@@ -81,7 +84,7 @@ class RagPipeline:
         才能取够 top_k 个不同的上下文；没有父块时展开不改变任何东西。
         """
         with Timer(timings, "retrieve"):
-            candidates: list[ScoredChunk] = self.retriever.retrieve(question, max(self.candidate_k, top_k))
+            candidates: list[ScoredChunk] = self.retriever.retrieve(question, max(self.candidate_k, top_k), where=where)
 
         with Timer(timings, "rerank"):
             ranked = self.reranker.rerank(question, candidates, len(candidates)) if self.reranker else candidates
