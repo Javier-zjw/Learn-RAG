@@ -474,7 +474,7 @@ Chroma 的稀疏向量和混合检索（含 RRF 融合）只在 Chroma Cloud / �
 | `verify` | 核对已建好的知识库是否完整（片段齐全、父块存在、模型一致），并抽样核对向量能被正确检索（`--sample N`）；有问题时退出码为 1 |
 | `eval` | 在数据集上评测，支持 `--retrieval-only`、`--judge`、`--reuse-index`、`--workers`、`--out` |
 | `ls` | 列出每一层所有已注册的可用实现 |
-| `serve` | 启动可视化建库页面（`--port`、`--data`），见“可视化建库页面” |
+| `serve` | 一条命令启动可视化建库页面：需要时自动构建前端，后台启动本机 MinerU，退出时一并关闭；见“可视化建库页面” |
 
 ### 6. 辅助脚本（`scripts/`）
 
@@ -696,6 +696,8 @@ bash scripts/start_mineru.sh     # 启动 VLM 服务（已运行则跳过）
 bash scripts/stop_mineru.sh      # 停止 VLM 服务，并清理残留的 MinerU 文档库服务
 ```
 
+使用可视化建库页面时不用手动运行这两个脚本：`learn-rag serve` 启动时自动启动 MinerU，退出时自动关闭（见“可视化建库页面 → 启动”）。
+
 启动脚本依次完成：
 1. 加载 `.mineru.env`，检查 `mineru-kit` 命令和模型目录是否存在（`MINERU_PYTHON_ENV` 没写在 `.mineru.env` 里时，默认 `/opt/anaconda3/envs/langchain_env`）；
 2. 访问 `<VLM 服务地址>/v1/models` 检查 VLM 服务。未运行时用 `mineru-kit vlm-server --engine llama-cpp` 在后台启动，最多等待 120 秒。
@@ -805,11 +807,24 @@ MinerU 4.x 只对 PDF 和图片区分质量档位；Word、PPT、Excel 等格式
 
 ### 启动
 
+只需要一条命令，前端、后端和本机 MinerU 一起启动，按 `Ctrl+C`（或直接关掉终端）时全部关闭：
+
 ```bash
-pip install -e ".[web,chroma,parsing]"
-cd web && npm install && npm run build && cd ..   # 构建前端（Node.js 20+），只需一次
-learn-rag serve                                    # 打开 http://127.0.0.1:8000
+pip install -e ".[web,chroma,parsing]"    # 只需一次；构建前端还需要 Node.js 20+
+learn-rag serve                            # 打开 http://127.0.0.1:8000
 ```
+
+`learn-rag serve` 依次完成：
+
+1. **前端**：`web/dist` 不存在或源码有更新时，自动 `npm install`（依赖变化时）和 `npm run build`；没有装 Node.js 时继续用上次的构建，没有构建过就只提供接口并提示安装；
+2. **MinerU**：项目根目录有 `.mineru.env` 时，在后台运行 `scripts/start_mineru.sh` 启动 VLM 服务，页面服务不等它，立即可用。
+   MinerU 就绪前提交的、要用 MinerU 解析的建库任务会先等它就绪，进度面板上显示“等待 MinerU 服务就绪”。
+   启动状态在“模型与环境”页查看。没有 `.mineru.env` 时不启动，PDF 用 PyMuPDF 解析；
+3. **退出**：`Ctrl+C`、`kill`，或者直接关掉终端窗口（会被转成正常退出），都会运行 `scripts/stop_mineru.sh` 关闭 VLM 服务和残留的文档库服务；
+   VLM 服务是之前手动启动的也一并关闭。
+
+`mineru-kit` 不在当前 Python 环境里时，会到 `.mineru.env` 的 `MINERU_PYTHON_ENV/bin` 下找（和启动脚本一致），页面上的 MinerU 选项据此判断是否可用。
+`--port`、`--data` 等参数都有默认值，一般不用传；切分、模型、解析器等参数都在页面上设置。
 
 开发前端时前后端分开跑，改代码页面热更新：
 
@@ -870,6 +885,8 @@ PDF 抽样最多 30 页看文字层、图片，在前 5 页检测表格；Office
   为此给知识库补了 `documents()`、`chunks_of(doc_id)`、`remove(doc_ids)`（删除文档时同步删掉子块、父块和 BM25），
   给 `FileSource` 补了 `files()`、`load_file(path)`（逐个文件解析，页面才能显示每个文件的进度）。
 - **重建分三种情况**：换了 embedding 模型或向量库参数 → 清空片段库重新向量化；只改切分参数 → 文档指纹变化，逐篇替换旧分块；参数不变 → 未变化的文档跳过，相当于续写上次没完成的建库。
+- **MinerU 随页面服务启停**（`server/mineru_service.py`）：直接复用 `start_mineru.sh` / `stop_mineru.sh`，只负责调用时机和把状态告诉页面。
+  启动脚本放在单独的进程组里运行，启动途中退出时连同它的子进程一起结束。
 - **后台任务**：一个线程按提交顺序执行，避免同一个知识库被两个任务同时写；进度通过 SSE 推送，连接断开时前端退回每秒轮询。
   任务只保存在内存里，服务重启后没处理完的文件标成失败，点“重建”即可续写（已写入的不会重复向量化）。
 - **失败原因从日志来**：解析器和知识库遇到坏文件只写日志、不抛异常（单个文件失败不能中断整批），任务按线程收集这段时间的警告和错误日志，作为该文件的失败原因显示在页面上。

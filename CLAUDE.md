@@ -18,7 +18,7 @@ learn-rag ask --corpus data/sample_corpus.jsonl -q "什么是RRF?"
 learn-rag eval --dataset jsonl --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
 python scripts/run_ablation.py --suite channel --dataset jsonl \
     --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
-learn-rag serve                                # 可视化建库页面（先在 web/ 下 npm install && npm run build）
+learn-rag serve                                # 可视化建库页面：自动构建前端、随之启停本机 MinerU
 cd web && npm run dev                          # 前端开发服务器，/api 转发到 learn-rag serve
 ```
 
@@ -106,6 +106,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **一个知识库一个目录，参数固定**：改参数走 `rebuild`，只有换 embedding 模型或向量库参数时才清空片段库。知识库 id 随机生成，不复用目录。
 - **页面参数 → 配置的翻译只在一处**：`Library.validate` 和 `Library._config`。新增一个页面参数时同时改 `validate`、`environment.default_settings` 和前端 `SettingsForm.vue`。
 - **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
+- **一条命令启停全部**：`learn-rag serve` 负责构建前端（`server/frontend.py`）和启停 MinerU（`server/mineru_service.py`，复用 `scripts/start_mineru.sh` / `stop_mineru.sh`，不要在 Python 里重写启停逻辑）。MinerU 在后台启动，不能阻塞页面服务；退出路径（Ctrl+C、SIGTERM、关闭终端的 SIGHUP、atexit）都要能关掉它，`stop` 必须可以重复调用。
 - **密钥不出后端**：页面只看到“是否已配置”，地址和密钥由 encoder 从环境变量读取，不写进 `kb.json`。
 - **前端约定**：请求都走 `src/api.ts`；颜色只用 `styles.css` 里的令牌（浅色、深色各一套）；分块底色要保证正文对比度不低于 12:1；动画要尊重 `prefers-reduced-motion`；`defineModel` 在同一轮里只赋值一次（连续赋值会读到旧值、互相覆盖）。
 - 改动后跑 `python -m unittest tests.test_server`、`cd web && npm run build`（含类型检查），再用 `learn-rag serve` 在浏览器里走一遍“上传 → 推荐 → 建库 → 查看分块”。
