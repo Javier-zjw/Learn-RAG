@@ -271,7 +271,8 @@ class Library:
         if chunker["chunk_size"] < 20:
             raise ValueError("子块大小至少 20")
 
-        encoder = {**base["encoder"], **(settings.get("encoder") or {})}
+        # 不和默认值合并：换了模型类型却没给模型名时，要用这个类型自己的默认模型，而不是沿用默认类型的模型名
+        encoder = settings.get("encoder") or base["encoder"]
         option = next((e for e in environment.encoders() if e["type"] == encoder.get("type")), None)
         if option is None or not option["available"]:
             raise ValueError(f"embedding 模型不可用：{option['note'] if option else encoder.get('type')}")
@@ -296,7 +297,37 @@ class Library:
             if list(chain) not in allowed:
                 raise ValueError(f"{suffix} 的解析器 {chain} 不可用")
         return {"chunker": chunker, "encoder": encoder, "index": index,
-                "parsers": {k: list(v) for k, v in parsers.items()}, "ocr": bool(settings.get("ocr", False))}
+                "parsers": {k: list(v) for k, v in parsers.items()}, "ocr": bool(settings.get("ocr", False)),
+                **self._validate_retrieval(settings, base)}
+
+    def _validate_retrieval(self, settings: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+        """精排模型、召回候选数、交给大模型的片段数。"""
+        ranker = settings.get("reranker") or base["reranker"]
+        option = next((r for r in environment.rerankers() if r["type"] == ranker.get("type")), None)
+        if option is None or not option["available"]:
+            raise ValueError(f"精排模型不可用：{option['note'] if option else ranker.get('type')}")
+        retrieval = {**base["retrieval"], **(settings.get("retrieval") or {})}
+        try:
+            top_k, candidate_k = int(retrieval["top_k"]), int(retrieval["candidate_k"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"检索参数不合法：{retrieval}") from None
+        if not 1 <= top_k <= 20:
+            raise ValueError("交给大模型的片段数要在 1～20 之间")
+        if not top_k <= candidate_k <= 200:
+            raise ValueError("召回候选数要不少于交给大模型的片段数，且不超过 200")
+        return {"reranker": {"type": option["type"], "model": str(ranker.get("model") or option["model"])},
+                "retrieval": {"candidate_k": candidate_k, "top_k": top_k}}
+
+    def set_retrieval(self, kb_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+        """
+        改精排模型和召回参数。它们只影响查询，不影响存进去的向量和分块，所以直接生效，不用重建。
+        """
+        with self._lock(kb_id):
+            manifest = self._manifest(kb_id)
+            manifest["settings"] = {**_with_defaults(manifest["settings"]),
+                                    **self._validate_retrieval(settings, environment.default_settings())}
+            self._write_manifest(manifest)
+        return self._summary(manifest)
 
     def _config(self, kb_id: str, settings: dict[str, Any], *, reset: bool = False) -> dict[str, Any]:
         """页面参数 → 完整配置。页面没有的部分沿用 configs/default.yaml 和 configs/parsing.yaml。"""
@@ -311,8 +342,10 @@ class Library:
         parsing.pop("ocr", None)
         if settings.get("ocr"):
             parsing["ocr"] = {"type": "vlm_ocr"}
+        settings = _with_defaults(settings)
         cfg.update(chunker=dict(settings["chunker"]), encoder=_encoder_config(settings["encoder"]),
-                   index=index, parsing=parsing)
+                   index=index, parsing=parsing, reranker=_reranker_config(settings["reranker"]),
+                   pipeline={**(cfg.get("pipeline") or {}), **settings["retrieval"]})
         return cfg
 
     # ------------------------------------------------------------------ 建库任务
@@ -419,7 +452,7 @@ class Library:
     def _summary(self, manifest: dict[str, Any]) -> dict[str, Any]:
         files = manifest["files"].values()
         return {
-            "id": manifest["id"], "name": manifest["name"], "settings": manifest["settings"],
+            "id": manifest["id"], "name": manifest["name"], "settings": _with_defaults(manifest["settings"]),
             "created_at": manifest["created_at"], "updated_at": manifest["updated_at"],
             "files": len(manifest["files"]),
             "chunks": sum(f.get("chunks", 0) for f in files),
@@ -474,8 +507,27 @@ def _file_entry(path: Path) -> dict[str, Any]:
             "chunks": 0, "parents": 0}
 
 
+def _with_defaults(settings: dict[str, Any]) -> dict[str, Any]:
+    """
+    精排和召回参数是后来加的，之前建的知识库清单里没有这两项：按当时的实际行为补上
+    （词重叠精排、召回 20 个候选、交给大模型 5 个），老知识库的检索结果不会因为升级而改变。
+    """
+    return {"reranker": {"type": "lexical", "model": ""}, "retrieval": {"candidate_k": 20, "top_k": 5}, **settings}
+
+
+def _reranker_config(reranker: dict[str, Any]) -> dict[str, Any]:
+    if reranker["type"] == "cross_encoder":
+        return {"type": "cross_encoder", "model_name": reranker["model"]}
+    if reranker["type"] == "api":
+        # 地址和密钥由精排器自己从环境变量（RERANK_*）读取，不写进清单
+        return {"type": "api", "model": reranker["model"]}
+    return {"type": reranker["type"]}
+
+
 def _encoder_config(encoder: dict[str, Any]) -> dict[str, Any]:
     if encoder["type"] == "hashing":
         return {"type": "hashing", "dimension": 512}
+    if encoder["type"] == "sentence_transformers":
+        return {"type": "sentence_transformers", "model_name": encoder["model"]}
     # 地址和密钥由 encoder 自己从环境变量读取，不经过页面，也不写进清单
     return {"type": "openai_compat", "model": encoder["model"], "dimension": int(os.getenv("EMBEDDING_DIM") or 1536)}

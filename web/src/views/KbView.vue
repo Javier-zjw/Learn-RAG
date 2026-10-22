@@ -2,9 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshRight, Delete, Search, View, EditPen } from '@element-plus/icons-vue'
+import { Plus, RefreshRight, Delete, Search, View, EditPen, Setting } from '@element-plus/icons-vue'
 import { api, watchJob, type DocRow, type Job, type KbInfo, type Settings } from '../api'
-import { STATUS, bytes, chunkerSummary, clone, encoderSummary, settingsError, timeAgo, typeGroup } from '../format'
+import { STATUS, bytes, chunkerSummary, clone, encoderSummary, rerankerSummary, settingsError, timeAgo, typeGroup } from '../format'
 import { loadEnv, refreshKbs, store } from '../store'
 import JobPanel from '../components/JobPanel.vue'
 import FileDrop, { type Entry } from '../components/FileDrop.vue'
@@ -135,6 +135,31 @@ async function saveRename() {
   }
 }
 
+// ---------------------------------------------------------------- 检索设置（精排、候选数），只影响查询，不用重建
+const retrievalOpen = ref(false)
+const retrievalSettings = ref<Settings | null>(null)
+const savingRetrieval = ref(false)
+async function openRetrieval() {
+  await loadEnv()
+  retrievalSettings.value = clone(info.value!.settings)
+  retrievalOpen.value = true
+}
+async function saveRetrieval() {
+  if (!retrievalSettings.value) return
+  savingRetrieval.value = true
+  try {
+    const { reranker, retrieval } = retrievalSettings.value
+    const summary = await api.setRetrieval(kbId.value, { reranker, retrieval })
+    info.value!.settings = summary.settings
+    retrievalOpen.value = false
+    ElMessage.success('检索设置已生效，不需要重建')
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    savingRetrieval.value = false
+  }
+}
+
 // ---------------------------------------------------------------- 追加文件
 const appendOpen = ref(false)
 const appendId = ref('')
@@ -202,10 +227,12 @@ async function submitRebuild() {
             <el-tag effect="plain" round>{{ chunkerSummary(info.settings) }}</el-tag>
             <el-tag effect="plain" round>{{ encoderSummary(info.settings) }}</el-tag>
             <el-tag effect="plain" round>{{ info.settings.index.type === 'chroma' ? 'Chroma' : 'Flat' }}</el-tag>
+            <el-tag effect="plain" round>{{ rerankerSummary(info.settings) }}</el-tag>
           </div>
         </div>
         <div class="actions">
           <el-button :icon="Plus" @click="openAppend">追加文件</el-button>
+          <el-button :icon="Setting" @click="openRetrieval">检索设置</el-button>
           <el-button :icon="RefreshRight" :disabled="busy" @click="openRebuild">重建</el-button>
           <el-button :icon="Delete" :disabled="busy" @click="removeKb">删除</el-button>
         </div>
@@ -286,6 +313,16 @@ async function submitRebuild() {
       <template #footer>
         <el-button @click="appendOpen = false">取消</el-button>
         <el-button type="primary" :disabled="!appendReady" @click="submitAppend">开始处理</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="retrievalOpen" title="检索设置" width="520px" destroy-on-close>
+      <SettingsForm v-if="retrievalSettings && store.env" v-model="retrievalSettings" :env="store.env" part="retrieval" />
+      <el-alert type="info" :closable="false" show-icon class="rebuild-note"
+                title="精排和召回参数只影响查询，保存后立即生效，不需要重建；本地精排模型在第一次查询时加载" />
+      <template #footer>
+        <el-button @click="retrievalOpen = false">取消</el-button>
+        <el-button type="primary" :loading="savingRetrieval" @click="saveRetrieval">保存</el-button>
       </template>
     </el-dialog>
 

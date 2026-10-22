@@ -197,16 +197,82 @@ class TestServer(unittest.TestCase):
         self.assertEqual(self.client.patch("/api/kbs/ffffffff", json={"name": "x"}).status_code, 404)
 
     def test_invalid_settings_are_rejected_with_reason(self):
+        from unittest.mock import patch
+
         upload = self._upload({"a.md": "# 标题\n\n正文"})
-        for settings, hint in [
+        cases = [
             ({"chunker": {"type": "structure", "chunk_size": 300, "parent_size": 200}}, "parent_size"),
-            ({"encoder": {"type": "sentence_transformers"}}, "本地模型"),
+            ({"encoder": {"type": "sentence_transformers"}}, "sentence-transformers"),
+            ({"reranker": {"type": "cross_encoder"}}, "sentence-transformers"),
+            ({"retrieval": {"candidate_k": 3, "top_k": 5}}, "召回候选数"),
             ({"chunker": {"type": "magic"}}, "切分器"),
-        ]:
-            response = self.client.post("/api/kbs", json={"name": "x", "upload_id": upload["upload_id"],
-                                                          "settings": settings})
-            self.assertEqual(response.status_code, 400, settings)
-            self.assertIn(hint, response.json()["detail"])
+        ]
+        with patch("learn_rag.server.environment.has_local_models", return_value=False):
+            for settings, hint in cases:
+                response = self.client.post("/api/kbs", json={"name": "x", "upload_id": upload["upload_id"],
+                                                              "settings": settings})
+                self.assertEqual(response.status_code, 400, settings)
+                self.assertIn(hint, response.json()["detail"])
+
+    def test_reranker_change_applies_without_rebuild(self):
+        from unittest.mock import patch
+
+        from learn_rag.retrieval.rerankers import CrossEncoderReranker, IdentityReranker
+
+        kb_id, _ = self._create({"encoder": _HASHING, "index": {"type": "flat"}})
+        info = self.client.get(f"/api/kbs/{kb_id}").json()
+        self.assertEqual(info["settings"]["reranker"]["type"], "lexical")
+        body = {"reranker": {"type": "identity"}, "retrieval": {"candidate_k": 30, "top_k": 3}}
+        summary = self.client.put(f"/api/kbs/{kb_id}/retrieval", json=body).json()
+        self.assertEqual(summary["settings"]["retrieval"], {"candidate_k": 30, "top_k": 3})
+        self.assertFalse(summary["busy"])                                   # 没有启动建库任务
+        pipe = self.library.pipeline(kb_id)
+        self.assertIsInstance(pipe.reranker, IdentityReranker)
+        self.assertEqual((pipe.candidate_k, pipe.top_k), (30, 3))
+        self.assertLessEqual(len(pipe.retrieve_only("安装步骤").contexts), 3)
+
+        # 本地 bge-reranker：选上之后管线能建起来，模型要到第一次精排时才加载
+        with patch("learn_rag.server.environment.has_local_models", return_value=True):
+            self.client.put(f"/api/kbs/{kb_id}/retrieval", json={"reranker": {"type": "cross_encoder"}})
+        pipe = self.library.pipeline(kb_id)
+        self.assertIsInstance(pipe.reranker, CrossEncoderReranker)
+        self.assertEqual(pipe.reranker.model_name, "BAAI/bge-reranker-v2-m3")
+        if not _has("sentence_transformers"):
+            with self.assertRaises(RuntimeError) as ctx:
+                pipe.retrieve_only("安装步骤")
+            self.assertIn('pip install -e ".[local]"', str(ctx.exception))
+
+    def test_local_bge_m3_is_configured_but_loaded_lazily(self):
+        from unittest.mock import patch
+
+        upload = self._upload({"a.md": "# 标题\n\n正文"})
+        with patch("learn_rag.server.environment.has_local_models", return_value=True):
+            settings = self.library.validate({"encoder": {"type": "sentence_transformers"}})
+        self.assertEqual(settings["encoder"], {"type": "sentence_transformers", "model": "BAAI/bge-m3"})
+        cfg = self.library._config("abcdef12", settings)
+        self.assertEqual(cfg["encoder"], {"type": "sentence_transformers", "model_name": "BAAI/bge-m3"})
+        from learn_rag.core.registry import registry
+
+        encoder = registry.build("encoder", cfg["encoder"])               # 构建时不加载 2 GB 的模型
+        self.assertIn("BAAI/bge-m3", encoder.signature())
+        self.client.delete(f"/api/uploads/{upload['upload_id']}/files", params={"path": "a.md"})
+
+    def test_old_knowledge_bases_keep_their_retrieval_behaviour(self):
+        import json
+
+        kb_id, _ = self._create({"encoder": _HASHING, "index": {"type": "flat"}})
+        manifest_path = Path(self.tmp) / "kbs" / kb_id / "kb.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for key in ("reranker", "retrieval"):                               # 升级前建的知识库没有这两项
+            manifest["settings"].pop(key)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        from learn_rag.server.library import Library
+
+        reopened = Library(self.tmp)
+        info = reopened.info(kb_id)
+        self.assertEqual(info["settings"]["reranker"]["type"], "lexical")
+        pipe = reopened.pipeline(kb_id)
+        self.assertEqual((pipe.candidate_k, pipe.top_k), (20, 5))
 
     @unittest.skipUnless(_has("chromadb"), "未安装 chromadb")
     def test_chroma_kb_survives_restart_and_can_be_deleted(self):

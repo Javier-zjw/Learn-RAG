@@ -185,7 +185,7 @@ def _scan_html(html: str) -> dict[str, Any]:
 def recommend(stats: dict[str, Any]) -> dict[str, Any]:
     """
     按统计结果推荐参数，返回 {summary, settings, reasons, warnings}。
-    reasons 的键是表单字段（chunker / chunk_size / parent_size / overlap_sentences / encoder / index /
+    reasons 的键是表单字段（chunker / chunk_size / parent_size / overlap_sentences / encoder / reranker / index /
     pdf_parser / docx_parser / ocr），值是一句话理由，前端显示在对应字段旁边。
     """
     settings = environment.default_settings()
@@ -237,16 +237,36 @@ def recommend(stats: dict[str, Any]) -> dict[str, Any]:
     settings["chunker"] = {"type": "structure", "chunk_size": chunk_size, "parent_size": parent_size,
                            "overlap_sentences": overlap}
 
-    # embedding 模型：只在能用的里面选
-    if settings["encoder"]["type"] == "hashing":
-        reasons["encoder"] = "没有配置 embedding 服务，先用 Hashing 跑通流程；它不理解语义，配置好服务后建议换模型重建"
-        warnings.append("当前只能使用 Hashing 向量，检索效果只用于演示。在 .env 配置 EMBEDDING_* 后可选真实模型")
+    # embedding 模型：只在能用的里面选。服务优先（不占本机资源），其次本地 BGE-M3，都没有才用 Hashing
+    local_encoder = next(e for e in environment.encoders() if e["type"] == "sentence_transformers")
+    if settings["encoder"]["type"] == "hashing" and local_encoder["available"]:
+        settings["encoder"] = {"type": "sentence_transformers", "model": local_encoder["model"]}
+        reasons["encoder"] = (f"没有配置 embedding 服务，用本地 {local_encoder['model']}：中英文检索效果都好；"
+                              "首次建库会自动下载约 2.2 GB 的模型，CPU 上向量化比服务慢")
+    elif settings["encoder"]["type"] == "hashing":
+        reasons["encoder"] = "没有配置 embedding 服务，也没有安装本地模型，先用 Hashing 跑通流程；它不理解语义，建议换模型重建"
+        warnings.append('当前只能使用 Hashing 向量，检索效果只用于演示。在 .env 配置 EMBEDDING_*，'
+                        '或 pip install -e ".[local]" 使用本地 BGE-M3')
     else:
         reasons["encoder"] = f"已配置 embedding 服务（{settings['encoder']['model']}），语义检索效果远好于 Hashing"
     cjk = stats["cjk_ratio"]
     if stats["tokens"]:
         language = "中文为主" if cjk >= 0.6 else "英文为主" if cjk <= 0.2 else "中英混合"
         reasons["encoder"] += f"；文档{language}，选模型时注意它对{'中文' if cjk >= 0.2 else '英文'}的支持"
+
+    # 精排：召回 50 个候选，交叉编码器逐个打分后取前 5 个，是工业系统的标准做法
+    rankers = {r["type"]: r for r in environment.rerankers()}
+    if rankers["api"]["available"]:
+        settings["reranker"] = {"type": "api", "model": rankers["api"]["model"]}
+        reasons["reranker"] = "已配置 rerank 服务：召回 50 个候选，精排后取前 5 个；服务失败时自动退回召回顺序"
+    elif rankers["cross_encoder"]["available"]:
+        settings["reranker"] = {"type": "cross_encoder", "model": rankers["cross_encoder"]["model"]}
+        reasons["reranker"] = ("用本地 bge-reranker-v2-m3：召回 50 个候选，精排后取前 5 个。"
+                               "首次查询时加载模型（约 2.2 GB），CPU 上每次查询要几秒")
+    else:
+        settings["reranker"] = {"type": "lexical", "model": ""}
+        reasons["reranker"] = "没有可用的 bge-reranker（服务或本地模型），先用词重叠精排；它判别力有限，召回候选保持 20 个"
+    settings["retrieval"] = {"candidate_k": 20 if settings["reranker"]["type"] == "lexical" else 50, "top_k": 5}
 
     # 向量库
     if settings["index"]["type"] == "chroma":

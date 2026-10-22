@@ -38,6 +38,13 @@ export function encoderSummary(s: Settings): string {
   return s.encoder.type === 'hashing' ? 'Hashing' : s.encoder.model
 }
 
+const RERANKER_LABELS: Record<string, string> = { lexical: '词重叠精排', identity: '不精排' }
+
+export function rerankerSummary(s: Settings): string {
+  const name = RERANKER_LABELS[s.reranker.type] ?? `精排 ${s.reranker.model.split('/').pop()}`
+  return `${name} · ${s.retrieval.candidate_k} → ${s.retrieval.top_k}`
+}
+
 export const STATUS: Record<FileStatus, { label: string; type: 'info' | 'primary' | 'success' | 'warning' | 'danger' }> = {
   waiting: { label: '等待中', type: 'info' },
   parsing: { label: '解析中', type: 'primary' },

@@ -14,6 +14,8 @@ export interface Settings {
   index: { type: 'chroma' | 'flat'; space?: string; ef_construction?: number; max_neighbors?: number; ef_search?: number }
   parsers: Record<string, string[]>
   ocr: boolean
+  reranker: { type: string; model: string }
+  retrieval: { candidate_k: number; top_k: number }
 }
 
 export interface EncoderOption {
@@ -33,6 +35,7 @@ export interface ParserChoice {
 
 export interface EnvReport {
   encoders: EncoderOption[]
+  rerankers: EncoderOption[]
   keys: { name: string; label: string; configured: boolean }[]
   packages: { name: string; installed: boolean; install: string }[]
   parsers: Record<string, ParserChoice[]>
@@ -230,6 +233,8 @@ export const api = {
     request<{ kb: KbInfo; job: Job }>('POST', '/api/kbs', { name, upload_id: uploadId, settings }),
   kb: (id: string) => request<KbInfo>('GET', `/api/kbs/${id}`),
   renameKb: (id: string, name: string) => request<KbSummary>('PATCH', `/api/kbs/${id}`, { name }),
+  setRetrieval: (id: string, settings: Pick<Settings, 'reranker' | 'retrieval'>) =>
+    request<KbSummary>('PUT', `/api/kbs/${id}/retrieval`, settings),
   deleteKb: (id: string) => request<{ ok: boolean }>('DELETE', `/api/kbs/${id}`),
   addFiles: (id: string, uploadId: string) => request<Job>('POST', `/api/kbs/${id}/files`, { upload_id: uploadId }),
   rebuild: (id: string, settings?: Settings) => request<Job>('POST', `/api/kbs/${id}/rebuild`, { settings: settings ?? null }),

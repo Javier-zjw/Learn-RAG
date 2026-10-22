@@ -6,7 +6,8 @@ import { settingsError } from '../format'
 import FormField from './FormField.vue'
 
 const settings = defineModel<Settings>({ required: true })
-const props = defineProps<{ env: EnvReport; reasons?: Record<string, string>; flashKey?: number }>()
+// part="retrieval" 只显示检索与精排（知识库详情页改精排用，改它不需要重建）
+const props = defineProps<{ env: EnvReport; reasons?: Record<string, string>; flashKey?: number; part?: 'all' | 'retrieval' }>()
 
 const reasons = computed(() => props.reasons ?? {})
 const advancedOpen = ref<string[]>([])
@@ -44,6 +45,15 @@ function pickEncoder(type: string, model: string) {
   settings.value.encoder = { type, model }
 }
 
+function pickReranker(type: string, model: string) {
+  settings.value.reranker = { type, model }
+  // 真正的精排给它 50 个候选去挑；词重叠精排判别力有限，候选多了反而引入噪声
+  settings.value.retrieval.candidate_k = type === 'api' || type === 'cross_encoder' ? 50 : 20
+}
+
+const MODEL_INPUT: Record<string, string> = { openai_compat: '模型名', sentence_transformers: '模型名或本地目录',
+                                              api: '模型名', cross_encoder: '模型名或本地目录' }
+
 const parserKey = (chain: string[]) => chain.join('>')
 function parserModel(suffix: string) {
   return computed({
@@ -58,6 +68,7 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
 
 <template>
   <div class="settings">
+    <template v-if="part !== 'retrieval'">
     <div class="section-label">切分</div>
     <FormField label="切分器" :reason="reasons.chunker" :flash="flashing.has('chunker')">
       <el-select v-model="settings.chunker.type">
@@ -111,14 +122,49 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
         </el-tooltip>
       </div>
       <Transition name="slide">
-        <el-input v-if="settings.encoder.type === 'openai_compat'" v-model="settings.encoder.model" size="small"
+        <el-input v-if="MODEL_INPUT[settings.encoder.type]" v-model="settings.encoder.model" size="small"
                   class="model-input">
-          <template #prepend>模型名</template>
+          <template #prepend>{{ MODEL_INPUT[settings.encoder.type] }}</template>
         </el-input>
       </Transition>
     </FormField>
+    </template>
 
-    <el-collapse v-model="advancedOpen" class="advanced">
+    <div class="section-label">检索与精排</div>
+    <FormField label="精排模型" :reason="reasons.reranker" :flash="flashing.has('reranker')"
+               hint="召回的候选逐个和问题一起打分再排序；只影响查询，改了不用重建">
+      <div class="encoders">
+        <el-tooltip v-for="option in env.rerankers" :key="option.type" :content="option.note"
+                    :disabled="option.available" placement="left">
+          <button type="button" class="encoder" :disabled="!option.available"
+                  :class="{ selected: settings.reranker.type === option.type }"
+                  @click="pickReranker(option.type, option.model)">
+            <span class="enc-main">
+              <span class="enc-label">{{ option.label }}</span>
+              <span class="enc-note">{{ option.note }}</span>
+            </span>
+            <el-icon class="enc-check"><CircleCheckFilled /></el-icon>
+          </button>
+        </el-tooltip>
+      </div>
+      <Transition name="slide">
+        <el-input v-if="MODEL_INPUT[settings.reranker.type]" v-model="settings.reranker.model" size="small"
+                  class="model-input">
+          <template #prepend>{{ MODEL_INPUT[settings.reranker.type] }}</template>
+        </el-input>
+      </Transition>
+    </FormField>
+    <div class="pair">
+      <FormField label="召回候选数" hint="各路召回融合后交给精排的片段数">
+        <el-input-number v-model="settings.retrieval.candidate_k" :min="settings.retrieval.top_k" :max="200" :step="10"
+                         controls-position="right" />
+      </FormField>
+      <FormField label="交给大模型" unit="个片段" hint="精排后取前几个（再展开成父块）">
+        <el-input-number v-model="settings.retrieval.top_k" :min="1" :max="20" controls-position="right" />
+      </FormField>
+    </div>
+
+    <el-collapse v-if="part !== 'retrieval'" v-model="advancedOpen" class="advanced">
       <el-collapse-item name="advanced" title="高级：向量库、解析器、OCR">
         <FormField label="向量库" :reason="reasons.index" :flash="flashing.has('index')">
           <el-radio-group v-model="settings.index.type">
@@ -212,7 +258,16 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
 .encoder:disabled { cursor: not-allowed; opacity: 0.5; background: var(--surface-2); }
 .enc-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .enc-label { font-weight: 500; font-size: 13px; }
-.enc-note { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.enc-note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .enc-check { color: var(--primary); font-size: 16px; opacity: 0; transform: scale(0.6); transition: all 0.2s var(--ease); }
 .encoder.selected .enc-check { opacity: 1; transform: scale(1); }
 .model-input { margin-top: 2px; }

@@ -23,6 +23,7 @@ _KEYS = {
     "EMBEDDING_MODEL": "Embedding 模型名",
     "LLM_API_KEY": "大模型密钥",
     "RERANK_API_KEY": "精排服务密钥",
+    "RERANK_BASE_URL": "精排服务地址",
     "OCR_BASE_URL": "OCR 服务地址",
 }
 
@@ -34,7 +35,12 @@ _PACKAGES = [
     ("pptx", "PPT 解析（python-pptx）", 'pip install -e ".[parsing]"'),
     ("openpyxl", "Excel 解析（openpyxl）", 'pip install -e ".[parsing]"'),
     ("docling", "Docling 高精度解析", 'pip install -e ".[docling]"'),
+    ("sentence_transformers", "本地 BGE-M3 / bge-reranker（sentence-transformers）", 'pip install -e ".[local]"'),
 ]
+
+# 本地模型的默认名称：HuggingFace 上的名字（首次使用自动下载），也可以在 .env 里改成已下载好的本地目录
+BGE_M3 = "BAAI/bge-m3"
+BGE_RERANKER = "BAAI/bge-reranker-v2-m3"
 
 
 def _installed(module: str) -> bool:
@@ -63,10 +69,15 @@ def has_ocr() -> bool:
     return bool(os.getenv("OCR_BASE_URL") or os.getenv("LLM_BASE_URL"))
 
 
+def has_local_models() -> bool:
+    return _installed("sentence_transformers")
+
+
 def encoders() -> list[dict[str, Any]]:
-    """可选的 embedding 模型。本地模型暂未接入，固定置灰。"""
+    """可选的 embedding 模型。"""
     load_env()
     configured = bool(os.getenv("EMBEDDING_API_KEY") or os.getenv("EMBEDDING_BASE_URL"))
+    local = has_local_models()
     return [
         {
             "type": "hashing", "label": "Hashing（离线演示）", "model": "hashing", "available": True,
@@ -76,13 +87,40 @@ def encoders() -> list[dict[str, Any]]:
             "type": "openai_compat", "label": "OpenAI 兼容 API",
             "model": os.getenv("EMBEDDING_MODEL") or "text-embedding-3-small",
             "available": configured,
-            "note": "调用 .env 里配置的 embedding 服务" if configured
+            "note": "调用 .env 里配置的 embedding 服务（bge-m3 部署成服务后选这个，模型名填服务里的名字）" if configured
             else "未配置 EMBEDDING_API_KEY / EMBEDDING_BASE_URL（.env）",
         },
         {
-            "type": "sentence_transformers", "label": "本地模型（sentence-transformers）", "model": "",
-            "available": False, "note": "本地模型尚未接入",
+            "type": "sentence_transformers", "label": "本地 BGE-M3",
+            "model": os.getenv("LOCAL_EMBEDDING_MODEL") or BGE_M3,
+            "available": local,
+            "note": "在本机运行，中英文都强，1024 维；首次使用自动下载约 2.2 GB，"
+                    "也可以在 .env 的 LOCAL_EMBEDDING_MODEL 填已下载好的目录" if local
+            else '未安装 sentence-transformers：pip install -e ".[local]"',
         },
+    ]
+
+
+def rerankers() -> list[dict[str, Any]]:
+    """
+    可选的精排模型。精排在召回的几十个候选上逐个打分，只影响查询，不影响存进去的向量，改了不用重建。
+    """
+    load_env()
+    api = bool(os.getenv("RERANK_API_KEY") or os.getenv("RERANK_BASE_URL"))
+    local = has_local_models()
+    return [
+        {"type": "lexical", "label": "词重叠（离线演示）", "model": "", "available": True,
+         "note": "只看查询词在片段里出现了多少，不理解语义，只用于跑通流程"},
+        {"type": "api", "label": "bge-reranker 服务", "model": os.getenv("RERANK_MODEL") or BGE_RERANKER,
+         "available": api,
+         "note": "调用 .env 里配置的 rerank 服务（SiliconFlow、Xinference、TEI 等），失败时退回召回顺序" if api
+         else "未配置 RERANK_API_KEY / RERANK_BASE_URL（.env）"},
+        {"type": "cross_encoder", "label": "本地 bge-reranker-v2-m3", "model": os.getenv("LOCAL_RERANK_MODEL") or BGE_RERANKER,
+         "available": local,
+         "note": "在本机运行，首次查询时加载（首次使用自动下载约 2.2 GB），CPU 上每次查询要几秒" if local
+         else '未安装 sentence-transformers：pip install -e ".[local]"'},
+        {"type": "identity", "label": "不精排", "model": "", "available": True,
+         "note": "直接用召回的顺序，做对照实验时用：量出精排到底提升了多少"},
     ]
 
 
@@ -107,8 +145,10 @@ def parser_choices() -> dict[str, list[dict[str, Any]]]:
 
 def default_settings() -> dict[str, Any]:
     """新建知识库时表单的初始值：和 configs/parsing.yaml 的切分参数一致，模型和解析器取当前能用的。"""
-    available = [e for e in encoders() if e["available"]]
+    # 默认只选已经配置好的服务，不默认选本地模型：本地模型首次使用要下载几个 GB，应该由用户自己决定
+    available = [e for e in encoders() if e["available"] and e["type"] != "sentence_transformers"]
     encoder = next((e for e in available if e["type"] != "hashing"), available[0])
+    ranker = next(r for r in rerankers() if r["type"] in ("api", "lexical") and r["available"])
     return {
         "chunker": {"type": "structure", "chunk_size": 300, "parent_size": 1200, "overlap_sentences": 0},
         "encoder": {"type": encoder["type"], "model": encoder["model"]},
@@ -119,6 +159,9 @@ def default_settings() -> dict[str, Any]:
             ".docx": ["docling", "docx"] if has_docling() else ["docx"],
         },
         "ocr": False,
+        "reranker": {"type": ranker["type"], "model": ranker["model"]},
+        # 有真正的精排时召回 50 个候选给它挑；词重叠精排判别力有限，候选多了反而引入噪声
+        "retrieval": {"candidate_k": 50 if ranker["type"] == "api" else 20, "top_k": 5},
     }
 
 
@@ -133,6 +176,7 @@ def report() -> dict[str, Any]:
     ]
     return {
         "encoders": encoders(),
+        "rerankers": rerankers(),
         "keys": [{"name": name, "label": label, "configured": bool(os.getenv(name))} for name, label in _KEYS.items()],
         "packages": packages,
         "parsers": parser_choices(),

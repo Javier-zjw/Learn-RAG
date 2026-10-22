@@ -59,6 +59,21 @@ onMounted(reload)
       </section>
 
       <section class="card rise" style="--i: 1">
+        <div class="card-head"><h3>精排模型</h3></div>
+        <div class="card-body list">
+          <div v-for="r in store.env.rerankers" :key="r.type" class="item" :class="{ off: !r.available }">
+            <el-icon :class="r.available ? 'good' : 'bad'">
+              <CircleCheckFilled v-if="r.available" /><CircleCloseFilled v-else />
+            </el-icon>
+            <div>
+              <div class="name">{{ r.label }} <span v-if="r.available && r.model" class="muted mono">{{ r.model }}</span></div>
+              <div class="hint">{{ r.note }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card rise" style="--i: 1">
         <div class="card-head"><h3>环境变量（.env）</h3></div>
         <div class="card-body list">
           <div v-for="k in store.env.keys" :key="k.name" class="item">
