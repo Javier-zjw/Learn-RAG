@@ -94,7 +94,7 @@ def _read_page(page, number: int) -> list[Element]:
         items.append((bbox[1], element))
 
     for table in tables:
-        markdown = table_to_markdown(table.extract())
+        markdown = table_to_markdown(_drop_empty_columns(table.extract()))
         if markdown:
             items.append((table.bbox[1], Element("table", markdown, page=number, bbox=list(table.bbox))))
 
@@ -194,3 +194,15 @@ def _merge_across_pages(elements: list[Element]) -> list[Element]:
             continue
         merged.append(e)
     return merged
+
+
+def _drop_empty_columns(rows: list[list[str | None]]) -> list[list[str | None]]:
+    """
+    去掉每一行都为空的列。PyMuPDF 2.0 的表格识别会在两条竖线之间多切出一列空列
+    （1.x 没有这个问题），这样的列不含任何信息，留着只会让表格多一列空白。
+    """
+    if not rows:
+        return rows
+    width = max(len(r) for r in rows)
+    keep = [i for i in range(width) if any(i < len(r) and (r[i] or "").strip() for r in rows)]
+    return [[r[i] if i < len(r) else None for i in keep] for r in rows]
