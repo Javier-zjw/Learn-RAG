@@ -7,6 +7,7 @@ learn_rag.cli —— 命令行入口。
     ask     一次问答（含证据展示）——「跑起来」
     eval    在数据集上评测       ——「量出来」
     evalset 从自己的文档生成评测集 ——「有题考」
+    tune    用评测集调混合召回参数 ——「调得准」
     ls      查看有哪些可用实现   ——「换得动」
     serve   启动可视化建库页面   ——「点得到」
 
@@ -228,15 +229,11 @@ def cmd_evalset(args: argparse.Namespace) -> None:
     """
     from .eval.synth import QuestionSynthesizer, to_jsonl_row
 
-    cfg = load_config("configs/default.yaml", "configs/models_env.yaml", *(args.config or []))
-    llm_cfg = cfg.get("llm") or {}
-    if llm_cfg.get("type") == "echo" or not (llm_cfg.get("api_key") or llm_cfg.get("base_url")):
-        raise SystemExit("生成评测集需要大模型：在 .env 里配置 LLM_BASE_URL、LLM_API_KEY、LLM_MODEL"
-                         "（任何 OpenAI 兼容服务，如 DeepSeek、Qwen、本地 vLLM）")
+    llm = _llm_from_env(args, required="生成评测集")
     library, info = _open_kb(args)
     kb = library.pipeline(args.kb).kb
     chunks = [c for doc_id in kb.documents() for c in kb.chunks_of(doc_id)]
-    synthesizer = QuestionSynthesizer(registry.build("llm", llm_cfg), per_passage=args.per, workers=args.workers)
+    synthesizer = QuestionSynthesizer(llm, per_passage=args.per, workers=args.workers)
     print(f"[出题] 知识库 {info['name']}（{args.kb}）：{len(kb.documents())} 个文档，目标 {args.n} 道题……")
     samples = synthesizer.generate(chunks, args.n, seed=args.seed)
 
@@ -250,6 +247,88 @@ def cmd_evalset(args: argparse.Namespace) -> None:
     print(f"  评测：learn-rag eval --kb {args.kb} --qa {out} --retrieval-only")
     if not samples:
         raise SystemExit(1)
+
+
+def _llm_from_env(args: argparse.Namespace, *, required: str | None = None):
+    """
+    .env 里配置的大模型（configs/models_env.yaml 的 llm 段，--config 可以覆盖）。
+    没配置时：required 不为空就报错退出（说明是哪个功能要用），否则返回 None。
+    """
+    cfg = load_config("configs/default.yaml", "configs/models_env.yaml", *(getattr(args, "config", None) or []))
+    llm_cfg = cfg.get("llm") or {}
+    if llm_cfg.get("type") == "echo" or not (llm_cfg.get("api_key") or llm_cfg.get("base_url")):
+        if required:
+            raise SystemExit(f"{required}需要大模型：在 .env 里配置 LLM_BASE_URL、LLM_API_KEY、LLM_MODEL"
+                             "（任何 OpenAI 兼容服务，如 DeepSeek、Qwen、本地 vLLM）")
+        return None
+    return registry.build("llm", llm_cfg)
+
+
+def cmd_tune(args: argparse.Namespace) -> None:
+    """
+    用评测集给知识库的混合召回调参：网格搜索各路权重、RRF 常数、召回候选数，可选再比较查询改写。
+    --apply 把最好的一组写回知识库（只影响查询，不用重建）。
+    """
+    from .eval.tuning import FusionTuner, build_transforms, default_grid
+
+    library, info = _open_kb(args)
+    pipe = library.pipeline(args.kb)
+    current_retrieval = info["settings"]["retrieval"]
+    names = ["vector", "bm25"] + (["sparse"] if pipe.kb.encoder.supports_sparse else [])
+    channels = {name: registry.build("retriever", {"type": name}, kb=pipe.kb) for name in names}
+    samples = list(JsonlQADataset(args.qa, limit=args.limit).samples())
+    current = {"weights": {n: float(current_retrieval["weights"].get(n, 0.0)) for n in names},
+               "rrf_k": current_retrieval["rrf_k"], "candidate_k": current_retrieval["candidate_k"]}
+    grid = default_grid(names, pipe.top_k)
+    if current not in grid:
+        grid.append(current)
+    k = pipe.top_k
+    print(f"[调参] 知识库 {info['name']}（{args.kb}）：{len(samples)} 道题，{len(grid)} 组参数，"
+          f"召回通道 {' + '.join(names)}，精排 {info['settings']['reranker']['type']}")
+    if pipe.reranker is not None and not pipe.reranker.pointwise:
+        print("  注意：当前精排器的分数和召回结果有关、不能缓存，每组参数都重新精排一遍")
+    tuner = FusionTuner(pipe, channels)
+    rows = tuner.run(samples, grid)
+    best = rows[0]
+    current_rank = next(i for i, row in enumerate(rows) if row.config == current)
+
+    def describe(row) -> str:
+        weights = " / ".join(f"{row.config['weights'][n]:g}" for n in names)
+        s = row.scores
+        return (f"{weights:>14}  {row.config['rrf_k']:>5}  {row.config['candidate_k']:>5}  "
+                f"{s[f'evidence_hit@{k}']:.3f}  {s[f'evidence_mrr@{k}']:.3f}  {s[f'evidence_recall@{k}']:.3f}")
+
+    print(f"\n  名次  {'权重 ' + '/'.join(names):>14}  rrf_k  候选数  hit@{k}  mrr@{k}  recall@{k}")
+    for i, row in enumerate(rows[: args.top]):
+        print(f"  {i + 1:>4}  {describe(row)}{'  ← 当前' if i == current_rank else ''}")
+    if current_rank >= args.top:
+        print(f"  {current_rank + 1:>4}  {describe(rows[current_rank])}  ← 当前")
+    gain = best.scores[f"evidence_hit@{k}"] - rows[current_rank].scores[f"evidence_hit@{k}"]
+    print(f"\n  最好的一组比当前 evidence_hit@{k} {'+' if gain >= 0 else ''}{gain:.3f}")
+
+    chosen_transform = current_retrieval.get("query_transform", "none")
+    if args.transforms:
+        transforms = build_transforms(["none", *args.transforms.split(",")], _llm_from_env(args, required="比较查询改写"))
+        print(f"\n[查询改写] 在最好的融合参数上比较：{', '.join(transforms)}（每个问题都要调用大模型）")
+        report = tuner.compare_transforms(samples, best.config, transforms)
+        for name, scores in report.items():
+            print(f"  {name:>12}  hit@{k} {scores[f'evidence_hit@{k}']:.3f}  mrr@{k} {scores[f'evidence_mrr@{k}']:.3f}")
+        chosen_transform = max(report, key=lambda n: (report[n][f"evidence_hit@{k}"], report[n][f"evidence_mrr@{k}"]))
+
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps([{"config": r.config, "scores": r.scores} for r in rows], ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        print(f"\n全部结果已保存：{out}")
+    if args.apply:
+        retrieval = {**current_retrieval, "weights": {**current_retrieval["weights"], **best.config["weights"]},
+                     "rrf_k": best.config["rrf_k"], "candidate_k": best.config["candidate_k"],
+                     "query_transform": chosen_transform}
+        library.set_retrieval(args.kb, {"retrieval": retrieval})
+        print(f"\n[已应用] 知识库 {args.kb} 的检索设置已更新（不需要重建）：{retrieval}")
+    else:
+        print("\n加 --apply 把最好的一组写回知识库")
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -406,6 +485,18 @@ def main() -> None:
     p_evalset.add_argument("--out", help="输出 jsonl（默认 data/eval/<知识库 id>.jsonl）")
     p_evalset.add_argument("--config", action="append", default=None, help="额外的配置文件（覆盖 llm 等）")
     p_evalset.set_defaults(func=cmd_evalset)
+
+    p_tune = sub.add_parser("tune", help="用评测集给知识库的混合召回调参（各路权重、RRF 常数、候选数、查询改写）")
+    p_tune.add_argument("--kb", required=True, help="知识库 id（见 data/web/kbs/）")
+    p_tune.add_argument("--qa", required=True, help="评测集（learn-rag evalset 生成，需要 evidence 标注）")
+    p_tune.add_argument("--data", default="data/web", help="页面服务的数据目录")
+    p_tune.add_argument("--limit", type=int, help="只用前 N 道题")
+    p_tune.add_argument("--top", type=int, default=10, help="显示前几名")
+    p_tune.add_argument("--transforms", help="在最好的融合参数上再比较查询改写，如 multi_query,hyde（需要大模型）")
+    p_tune.add_argument("--apply", action="store_true", help="把最好的一组写回知识库")
+    p_tune.add_argument("--out", help="全部结果保存为 json")
+    p_tune.add_argument("--config", action="append", default=None, help="额外的配置文件（覆盖 llm 等）")
+    p_tune.set_defaults(func=cmd_tune)
 
     p_build = sub.add_parser("build", help="离线建库并持久化（只需跑一次）")
     p_build.add_argument("--config", action="append", default=None)

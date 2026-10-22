@@ -75,6 +75,8 @@ class CrossEncoderReranker(Reranker):
     因此判别力强得多，但复杂度是 O(候选数) 次前向，只能用在小候选集上。
     """
 
+    pointwise = True
+
     def __init__(self, model_name: str = "BAAI/bge-reranker-base", batch_size: int = 16,
                  device: str | None = None, max_length: int = 512) -> None:
         self.model_name, self.batch_size, self.device, self.max_length = model_name, batch_size, device, max_length
@@ -134,6 +136,8 @@ class ApiReranker(Reranker):
       /services/rerank/text-rerank/text-rerank。其他非标准服务可以在 yaml 里显式指定 endpoint。
       响应同时兼容 {"results": [...]}、{"data": [...]} 与通义的 {"output": {"results": [...]}}。
     """
+
+    pointwise = True
 
     def __init__(
             self,

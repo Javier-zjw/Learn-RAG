@@ -157,6 +157,10 @@ class Reranker(ABC):
     Retriever 面向"从百万里捞出百条"，Reranker 面向"把百条排准"
     """
 
+    # 每个候选的分数只取决于（问题, 这个候选的正文），和召回分、同一批里还有谁都无关（交叉编码器、rerank 服务）。
+    # 调参工具据此对每个候选只打一次分、在不同参数组合间复用；分数掺了召回分（词重叠）或逐批打分（大模型精排）的保持 False
+    pointwise: bool = False
+
     @abstractmethod
     def rerank(self, query: str, candidates: Sequence[ScoredChunk], top_k: int) -> list[ScoredChunk]: ...
 
