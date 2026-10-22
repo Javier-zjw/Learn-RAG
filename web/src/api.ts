@@ -131,6 +131,29 @@ export interface Job {
   version: number
 }
 
+export interface Latency { p50: number; p95: number; max: number }
+
+// 运行监控：查询 trace 的统计和建库耗时（learn_rag/server/library.py 的 metrics）
+export interface Metrics {
+  queries: {
+    days: number
+    queries: number
+    errors: number
+    error_rate: number
+    empty_rate: number
+    latency: Record<string, Latency>
+    slowest: { question: string; seconds: number; ts: number }[]
+    recent_empty: { question: string; overlap: number | null; ts: number }[]
+    recent_errors: { question: string; error: string; ts: number }[]
+  }
+  build: {
+    files: number
+    stages: Record<string, Latency & { total: number }>
+    jobs: { id: string; kind: Job['kind']; status: Job['status']; attempts: number; files: number; failed: number;
+            created_at: number; queued_seconds: number | null; run_seconds: number | null }[]
+  }
+}
+
 export interface KbSummary {
   id: string
   name: string
@@ -279,6 +302,7 @@ export const api = {
   document: (id: string, docId: string) => request<DocView>('GET', `/api/kbs/${id}/documents/${docPath(docId)}`),
   deleteDocument: (id: string, docId: string) =>
     request<Job>('DELETE', `/api/kbs/${id}/documents/${docPath(docId)}`),
+  metrics: (id: string, days = 7) => request<Metrics>('GET', `/api/kbs/${id}/metrics?days=${days}`),
   layout: (id: string, docId: string) => request<PageLayout>('GET', `/api/kbs/${id}/layout?doc=${encodeURIComponent(docId)}`),
   pageUrl: (id: string, docId: string, page: number) => `/api/kbs/${id}/page?doc=${encodeURIComponent(docId)}&n=${page}`,
   assetUrl: (id: string, asset: string) => `/api/kbs/${id}/assets/${asset.split('/').map(encodeURIComponent).join('/')}`,

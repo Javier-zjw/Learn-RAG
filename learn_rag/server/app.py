@@ -19,6 +19,7 @@ server.app —— HTTP 接口。只做参数解析和错误码翻译，所有逻
     GET    /api/kbs/{kb_id}/layout?doc=           原文预览：每页尺寸、每个子块在页面上的位置、未进入分块的文字
     GET    /api/kbs/{kb_id}/page?doc=&n=          第 n 页的页面图片
     GET    /api/kbs/{kb_id}/assets/{asset}       图片资产
+    GET    /api/kbs/{kb_id}/metrics?days=        运行监控：查询的 P50 / P95、空召回率、错误率，建库耗时和最近的任务
     GET    /api/jobs/{job_id}                    任务快照
     GET    /api/jobs/{job_id}/events             任务进度（SSE，状态变化时推送快照，任务结束后关闭）
 
@@ -188,6 +189,10 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
     @app.delete("/api/kbs/{kb_id}/documents/{doc_id:path}")
     def remove_document(kb_id: str, doc_id: str) -> dict[str, Any]:
         return library.remove_document(kb_id, doc_id).snapshot()
+
+    @app.get("/api/kbs/{kb_id}/metrics")
+    def metrics(kb_id: str, days: float = 7) -> dict[str, Any]:
+        return library.metrics(kb_id, days)
 
     @app.get("/api/kbs/{kb_id}/layout")
     def layout(kb_id: str, doc: str) -> dict[str, Any]:

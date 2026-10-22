@@ -7,6 +7,7 @@ import { api, watchJob, type DocRow, type Job, type KbInfo, type Settings } from
 import { STATUS, bytes, chunkerSummary, clone, encoderSummary, enrichSummary, rerankerSummary, retrievalError, settingsError, timeAgo, typeGroup } from '../format'
 import { loadEnv, refreshKbs, store } from '../store'
 import JobPanel from '../components/JobPanel.vue'
+import MetricsCard from '../components/MetricsCard.vue'
 import FileDrop, { type Entry } from '../components/FileDrop.vue'
 import SettingsForm from '../components/SettingsForm.vue'
 
@@ -305,6 +306,8 @@ async function submitRebuild() {
           </el-table-column>
         </el-table>
       </section>
+
+      <MetricsCard class="rise" style="--i: 5" :kb-id="kbId" :refresh-key="info.updated_at" />
     </template>
     <el-skeleton v-else :rows="10" animated />
 

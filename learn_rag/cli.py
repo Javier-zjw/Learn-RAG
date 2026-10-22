@@ -338,7 +338,8 @@ def cmd_chat(args: argparse.Namespace) -> None:
     """
     library, info = _open_kb(args)
     pipe = library.pipeline(args.kb)
-    print(f"[知识库] {info['name']}（{args.kb}）：输入问题开始对话，空行或 exit 退出")
+    print(f"[知识库] {info['name']}（{args.kb}）：输入问题开始对话，空行或 exit 退出；"
+          f"每次问答记进 trace，用 learn-rag stats --kb {args.kb} 查看")
     if pipe.condenser is None:
         print("  提示：未配置大模型（.env 中的 LLM_BASE_URL / LLM_API_KEY），追问不会结合上文补全")
     history: list[dict[str, str]] = []
@@ -349,7 +350,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
             break
         if question in ("", "exit", "quit"):
             break
-        result = pipe.answer(question, history=history)
+        result = library.ask(args.kb, question, history=history)
         if "standalone_question" in result.extras:
             print(f"（补全为：{result.extras['standalone_question']}）")
         print(f"答> {result.answer.text}")
@@ -357,6 +358,35 @@ def cmd_chat(args: argparse.Namespace) -> None:
             title = ctx.chunk.metadata.get("title", ctx.doc_id)
             print(f"  [{i}] {title}：{' '.join(ctx.text.split())[:60]}…")
         history += [{"role": "user", "content": question}, {"role": "assistant", "content": result.answer.text}]
+
+
+def cmd_stats(args: argparse.Namespace) -> None:
+    """知识库的运行监控：查询的 P50 / P95 延迟、空召回率、错误率，建库各阶段耗时和最近的任务。"""
+    library, info = _open_kb(args)
+    m = library.metrics(args.kb, args.days)
+    q, b = m["queries"], m["build"]
+    print(f"[知识库] {info['name']}（{args.kb}）")
+    print(f"\n===== 查询（最近 {args.days:g} 天）=====")
+    print(f"  查询 {q['queries']} 次，错误 {q['errors']} 次（{q['error_rate']:.1%}），疑似空召回 {q['empty_rate']:.1%}")
+    for stage, v in q["latency"].items():
+        print(f"  {stage:>10}  P50 {v['p50'] * 1000:8.1f} ms   P95 {v['p95'] * 1000:8.1f} ms   最大 {v['max'] * 1000:8.1f} ms")
+    if q["recent_empty"]:
+        print("  最近疑似空召回的问题（补文档、补评测集的素材）：")
+        for e in q["recent_empty"]:
+            print(f"    - {e['question']}（实词覆盖 {e['overlap'] if e['overlap'] is not None else 0:.0%}）")
+    if q["recent_errors"]:
+        print("  最近出错的问题：")
+        for e in q["recent_errors"]:
+            print(f"    - {e['question']}：{e['error'][:120]}")
+    print(f"\n===== 建库（{b['files']} 个文件）=====")
+    names = {"parse": "解析", "index": "切分与向量化"}
+    for stage, v in b["stages"].items():
+        print(f"  {names.get(stage, stage):>8}  P50 {v['p50']:7.2f} s   P95 {v['p95']:7.2f} s   最大 {v['max']:7.2f} s   合计 {v['total']:8.1f} s")
+    for job in b["jobs"]:
+        run = f"{job['run_seconds']:.1f} s" if job["run_seconds"] is not None else "—"
+        wait = f"{job['queued_seconds']:.1f} s" if job["queued_seconds"] is not None else "—"
+        print(f"  任务 {job['id']}  {job['kind']:<8} {job['status']:<7} 排队 {wait:>8}  执行 {run:>8}  "
+              f"第 {job['attempts']} 次  {job['files']} 个文件，失败 {job['failed']}")
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -545,6 +575,12 @@ def main() -> None:
     p_chat.add_argument("--kb", required=True, help="知识库 id（见 data/web/kbs/）")
     p_chat.add_argument("--data", default="data/web", help="页面服务的数据目录")
     p_chat.set_defaults(func=cmd_chat)
+
+    p_stats = sub.add_parser("stats", help="知识库的运行监控：查询 P50 / P95、空召回率、错误率，建库耗时")
+    p_stats.add_argument("--kb", required=True, help="知识库 id（见 data/web/kbs/）")
+    p_stats.add_argument("--data", default="data/web", help="页面服务的数据目录")
+    p_stats.add_argument("--days", type=float, default=7, help="统计最近几天（默认 7）")
+    p_stats.set_defaults(func=cmd_stats)
 
     p_build = sub.add_parser("build", help="离线建库并持久化（只需跑一次）")
     p_build.add_argument("--config", action="append", default=None)

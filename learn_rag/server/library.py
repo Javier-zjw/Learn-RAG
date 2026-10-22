@@ -45,7 +45,9 @@ from ..core.config import load_config
 from ..core.registry import registry
 from ..parsing.assets import configured_assets_dirs, locate_asset
 from ..parsing.source import FileSource
+from ..core.types import RagResult
 from ..pipeline.rag import RagPipeline
+from ..pipeline.trace import QueryLog, percentile
 from . import environment
 from .chunk_view import document_view
 from ..core.types import ENRICH_KEY
@@ -264,6 +266,58 @@ class Library:
         if key not in self._digests:
             self._digests[key] = hashlib.sha256(file.read_bytes()).hexdigest()
         return self._digests[key]
+
+    # ------------------------------------------------------------------ 问答与监控
+    def ask(self, kb_id: str, question: str, *, history: list[dict[str, str]] | None = None,
+            source: str = "chat") -> RagResult:
+        """
+        线上问答的统一入口（命令行 chat，以后的提问页）：答完记一条 trace，出错也记，再把异常抛给调用方。
+        评测、调参直接用 pipeline()，不记 trace —— 它们一次跑几百题，会把线上统计冲掉。
+        注意：worker 在另一个进程写过的 Chroma，本进程已打开的 HNSW 索引看不到新向量，
+        所以问答要在新进程里做（命令行），或者等以后页面问答时在这里处理。
+        """
+        log = self._query_log(kb_id)
+        started = time.perf_counter()
+        try:
+            result = self.pipeline(kb_id).answer(question, history=history)
+        except Exception as exc:
+            log.record(question, error=str(exc), source=source, seconds=time.perf_counter() - started)
+            raise
+        log.record(question, result, source=source)
+        return result
+
+    def metrics(self, kb_id: str, days: float = 7) -> dict[str, Any]:
+        """
+        运行监控：最近 days 天的查询统计（P50 / P95、空召回率、错误率），和建库统计
+        （每个文件解析、入库的耗时分布，最近任务的排队时间、执行时间、重试次数、失败文件数）。
+        """
+        manifest = self._manifest(kb_id)
+        stages: dict[str, list[float]] = {}
+        for entry in manifest["files"].values():
+            for stage, value in (entry.get("seconds") or {}).items():
+                stages.setdefault(stage, []).append(value)
+        jobs = []
+        for job in self.jobs.history(kb_id, limit=10):
+            started, finished = job.started_at, job.finished_at
+            jobs.append({
+                "id": job.id, "kind": job.kind, "status": job.status, "attempts": job.attempts,
+                "files": len(job.files), "failed": sum(1 for f in job.files if f.status == FAILED),
+                "created_at": job.created_at, "queued_seconds": round(started - job.created_at, 2) if started else None,
+                "run_seconds": round(finished - started, 2) if started and finished else None,
+            })
+        return {
+            "queries": self._query_log(kb_id).summary(days=days),
+            "build": {
+                "files": len(manifest["files"]),
+                "stages": {stage: {"p50": percentile(v, 50), "p95": percentile(v, 95), "max": max(v), "total": sum(v)}
+                           for stage, v in sorted(stages.items())},
+                "jobs": jobs,
+            },
+        }
+
+    def _query_log(self, kb_id: str) -> QueryLog:
+        self._manifest(kb_id)          # 知识库不存在时报 NotFound
+        return QueryLog(self.kbs_dir / kb_id / "traces")
 
     def asset(self, kb_id: str, asset: str) -> Path:
         manifest = self._manifest(kb_id)
