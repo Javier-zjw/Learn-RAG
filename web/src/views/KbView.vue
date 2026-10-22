@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshRight, Delete, Search, View, EditPen, Setting } from '@element-plus/icons-vue'
 import { api, watchJob, type DocRow, type Job, type KbInfo, type Settings } from '../api'
-import { STATUS, bytes, chunkerSummary, clone, encoderSummary, rerankerSummary, retrievalError, settingsError, timeAgo, typeGroup } from '../format'
+import { STATUS, bytes, chunkerSummary, clone, encoderSummary, enrichSummary, rerankerSummary, retrievalError, settingsError, timeAgo, typeGroup } from '../format'
 import { loadEnv, refreshKbs, store } from '../store'
 import JobPanel from '../components/JobPanel.vue'
 import FileDrop, { type Entry } from '../components/FileDrop.vue'
@@ -228,6 +228,7 @@ async function submitRebuild() {
             <el-tag effect="plain" round>{{ encoderSummary(info.settings) }}</el-tag>
             <el-tag effect="plain" round>{{ info.settings.index.type === 'chroma' ? 'Chroma' : 'Flat' }}</el-tag>
             <el-tag effect="plain" round>{{ rerankerSummary(info.settings) }}</el-tag>
+            <el-tag v-if="enrichSummary(info.settings)" effect="plain" round>{{ enrichSummary(info.settings) }}</el-tag>
           </div>
         </div>
         <div class="actions">

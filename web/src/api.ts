@@ -14,8 +14,26 @@ export interface Settings {
   index: { type: 'chroma' | 'flat'; space?: string; ef_construction?: number; max_neighbors?: number; ef_search?: number }
   parsers: Record<string, string[]>
   ocr: boolean
+  enrich: EnrichSettings
   reranker: { type: string; model: string }
   retrieval: RetrievalSettings
+}
+
+// 建库增强：大模型给每个子块写背景、概括表格、描述图片、生成假设问题，给父块写摘要（都只用于检索）
+export interface EnrichSettings {
+  context: boolean
+  describe: boolean
+  questions: number
+  summaries: boolean
+}
+
+// 片段元数据里的增强结果（metadata.enrich）
+export interface EnrichResult {
+  context?: string
+  description?: string
+  questions?: string[]
+  summary?: string
+  failed?: string[]
 }
 
 export type Channel = 'vector' | 'bm25' | 'sparse'
@@ -53,6 +71,7 @@ export interface EnvReport {
   packages: { name: string; installed: boolean; install: string }[]
   parsers: Record<string, ParserChoice[]>
   ocr: boolean
+  enrich: { available: boolean; vlm: boolean; note: string; vlm_note: string }
   defaults: Settings
   mineru: { state: 'disabled' | 'starting' | 'ready' | 'failed' | 'stopped'; message: string; url: string } | null
 }

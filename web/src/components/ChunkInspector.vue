@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Back } from '@element-plus/icons-vue'
-import { api, type ChunkItem, type ParentItem } from '../api'
+import { api, type ChunkItem, type EnrichResult, type ParentItem } from '../api'
 import { KIND_LABELS } from '../format'
 import { renderMarkdown } from '../markdown'
 
@@ -32,6 +32,8 @@ const json = computed(() => JSON.stringify(props.chunk?.metadata ?? {}, null, 2)
 const parentId = computed(() => (props.chunk && !props.isParent ? (props.chunk as ChunkItem).parent_id : null))
 const overlap = computed(() => (props.chunk && !props.isParent ? (props.chunk as ChunkItem).overlap : 0))
 const children = computed(() => (props.isParent ? (props.chunk as ParentItem).children : []))
+const enrich = computed(() => (props.chunk?.metadata?.enrich ?? null) as EnrichResult | null)
+const FAILED_LABELS: Record<string, string> = { chunk: '背景 / 表格描述 / 假设问题', image: '图片描述', summary: '章节摘要' }
 
 async function copy(text: string) {
   try {
@@ -105,6 +107,23 @@ async function copy(text: string) {
           <div class="parent-text md" v-html="renderMarkdown(chunk.body)" />
         </div>
 
+        <div v-if="enrich" class="block">
+          <div class="block-title">建库增强（大模型生成，只用于检索）</div>
+          <dl class="props enrich">
+            <template v-if="enrich.context"><dt>背景</dt><dd>{{ enrich.context }}</dd></template>
+            <template v-if="enrich.description"><dt>图表描述</dt><dd class="pre">{{ enrich.description }}</dd></template>
+            <template v-if="enrich.summary"><dt>章节摘要</dt><dd>{{ enrich.summary }}</dd></template>
+            <template v-if="enrich.questions?.length">
+              <dt>假设问题</dt>
+              <dd><ol class="questions"><li v-for="q in enrich.questions" :key="q">{{ q }}</li></ol></dd>
+            </template>
+            <template v-if="enrich.failed?.length">
+              <dt>未完成</dt>
+              <dd class="failed">{{ enrich.failed.map((f) => FAILED_LABELS[f] ?? f).join('、') }}（调用失败，重建时重试）</dd>
+            </template>
+          </dl>
+        </div>
+
         <div v-if="chunk.assets.length" class="block">
           <div class="block-title">图片资产（{{ chunk.assets.length }}）</div>
           <div v-for="a in chunk.assets" :key="a.asset" class="asset">
@@ -163,6 +182,10 @@ async function copy(text: string) {
 }
 .props dt { color: var(--text-3); }
 .props dd { margin: 0; word-break: break-all; }
+.props.enrich { grid-template-columns: 58px minmax(0, 1fr); margin-bottom: 0; line-height: 1.6; }
+.props .pre { white-space: pre-wrap; }
+.questions { margin: 0; padding-left: 18px; }
+.failed { color: var(--danger); }
 .id { display: flex; align-items: flex-start; gap: 4px; }
 .id .mono { font-size: 12px; color: var(--text-2); }
 .kinds { display: flex; flex-wrap: wrap; gap: 4px; }

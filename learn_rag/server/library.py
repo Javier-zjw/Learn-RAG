@@ -299,6 +299,7 @@ class Library:
                 raise ValueError(f"{suffix} 的解析器 {chain} 不可用")
         return {"chunker": chunker, "encoder": encoder, "index": index,
                 "parsers": {k: list(v) for k, v in parsers.items()}, "ocr": bool(settings.get("ocr", False)),
+                "enrich": _validate_enrich(settings.get("enrich")),
                 **self._validate_retrieval(settings, base, encoder)}
 
     def _validate_retrieval(self, settings: dict[str, Any], base: dict[str, Any],
@@ -370,6 +371,8 @@ class Library:
             cfg["llm"] = load_config(_PROJECT_ROOT / "configs" / "models_env.yaml")["llm"]
             cfg["generator"] = {"type": "stuff"}
             cfg["pipeline"]["condense"] = True
+        if _enrich_on(settings["enrich"]):
+            cfg["enrich"] = _enrich_config(settings["enrich"], parsing)
         return cfg
 
     # ------------------------------------------------------------------ 建库任务
@@ -531,6 +534,10 @@ def _file_entry(path: Path) -> dict[str, Any]:
             "chunks": 0, "parents": 0}
 
 
+# 建库增强的结果缓存，各知识库共用（见 _enrich_config）
+_ENRICH_CACHE = _PROJECT_ROOT / ".cache" / "enrich"
+
+
 def _with_defaults(settings: dict[str, Any]) -> dict[str, Any]:
     """
     精排和召回参数是后来分几次加的，之前建的知识库清单里缺其中几项：按当时的实际行为补上
@@ -538,7 +545,40 @@ def _with_defaults(settings: dict[str, Any]) -> dict[str, Any]:
     老知识库的检索结果不会因为升级而改变。
     """
     retrieval = {"candidate_k": 20, "top_k": 5, **environment.DEFAULT_FUSION, **(settings.get("retrieval") or {})}
-    return {"reranker": {"type": "lexical", "model": ""}, **settings, "retrieval": retrieval}
+    return {"reranker": {"type": "lexical", "model": ""}, "enrich": dict(environment.ENRICH_OFF), **settings,
+            "retrieval": retrieval}
+
+
+def _validate_enrich(enrich: dict[str, Any] | None) -> dict[str, Any]:
+    """建库增强的开关和假设问题个数；开了任何一项都要配置大模型。"""
+    merged = {**environment.ENRICH_OFF, **(enrich or {})}
+    try:
+        out = {"context": bool(merged["context"]), "describe": bool(merged["describe"]),
+               "questions": int(merged["questions"]), "summaries": bool(merged["summaries"])}
+    except (TypeError, ValueError):
+        raise ValueError(f"建库增强参数不合法：{enrich}") from None
+    if not 0 <= out["questions"] <= 5:
+        raise ValueError("每个子块的假设问题要在 0～5 个之间")
+    if _enrich_on(out) and not environment.has_llm():
+        raise ValueError("建库增强需要大模型：在 .env 配置 LLM_BASE_URL、LLM_API_KEY")
+    return out
+
+
+def _enrich_on(enrich: dict[str, Any]) -> bool:
+    return any(enrich.values())
+
+
+def _enrich_config(enrich: dict[str, Any], parsing: dict[str, Any]) -> dict[str, Any]:
+    """
+    增强结果缓存在项目的 .cache/enrich，各知识库共用：同样的片段、同样的模型，换个知识库也不用重新调用。
+    视觉模型的地址和密钥只在运行时从环境变量读取，不写进 kb.json。
+    """
+    cfg: dict[str, Any] = {**enrich, "cache_dir": str(_ENRICH_CACHE),
+                           "assets_dirs": configured_assets_dirs(parsing)}
+    if enrich["describe"] and environment.has_vlm():
+        cfg["vlm"] = {"type": "openai_compat", "model": os.getenv("OCR_MODEL"),
+                      "base_url": os.getenv("OCR_BASE_URL") or None, "api_key": os.getenv("OCR_API_KEY") or None}
+    return cfg
 
 
 def _supports_sparse(encoder: dict[str, Any]) -> bool:

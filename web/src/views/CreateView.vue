@@ -71,6 +71,7 @@ watch(
       ocr: () => now.ocr === rec.settings.ocr,
       reranker: () => same(now.reranker, rec.settings.reranker),
       fusion: () => same(now.retrieval.weights, rec.settings.retrieval.weights),
+      enrich: () => same(now.enrich, rec.settings.enrich),
     }
     for (const key of Object.keys(reasons)) if (checks[key] && !checks[key]()) delete reasons[key]
   },

@@ -216,6 +216,66 @@ class TestEnrichment(unittest.TestCase):
         self.assertEqual(reopened.add([_document()])["skipped"], 1)
 
 
+class TestLibraryEnrichment(unittest.TestCase):
+    """页面上建库时开增强：参数翻译成配置、分块查看页看得到增强结果、看不到视图，关掉增强重建后视图被清理。"""
+
+    def setUp(self) -> None:
+        import io
+        import os
+        from unittest.mock import patch
+
+        from learn_rag.server.library import Library
+
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.llm = _FakeLLM()
+        for p in (patch.dict(os.environ, {"LLM_API_KEY": "test", "LLM_BASE_URL": "http://llm.local/v1", "OCR_MODEL": ""}),
+                  patch("learn_rag.generation.llms.OpenAICompatLLM.chat", side_effect=self.llm.chat),
+                  patch("learn_rag.server.library._ENRICH_CACHE", Path(self.tmp) / "cache")):   # 增强缓存写到临时目录
+            p.start()
+            self.addCleanup(p.stop)
+        self.library = Library(str(Path(self.tmp) / "web"))
+        upload_id, _ = self.library.staging.save(None, "运维手册.md", io.BytesIO(_MANUAL.encode("utf-8")))
+        settings = {"chunker": {"type": "structure", "chunk_size": 60, "parent_size": 0},
+                    "encoder": {"type": "hashing", "model": "hashing"}, "index": {"type": "flat"},
+                    "enrich": {"context": True, "describe": True, "questions": 2}}
+        created = self.library.create("运维", settings, upload_id)
+        job = self.library.jobs.wait(created["job"]["id"])
+        self.assertEqual(job.status, "done", job.error)
+        self.assertTrue(job.verify["ok"], job.verify["problems"])
+        self.kb = created["kb"]["id"]
+
+    def test_enrichment_is_visible_and_views_hidden(self):
+        info = self.library.info(self.kb)
+        self.assertEqual(info["settings"]["enrich"], {"context": True, "describe": True, "questions": 2, "summaries": False})
+        doc = self.library.document(self.kb, "运维手册.md")
+        self.assertEqual(len(doc["children"]), info["chunks"])                  # 视图不出现在分块列表里
+        enriched = [c["metadata"]["enrich"] for c in doc["children"]]
+        self.assertTrue(all(e["context"] and len(e["questions"]) == 2 for e in enriched))
+        self.assertEqual(sum(1 for e in enriched if "description" in e), 1)
+        result = self.library.pipeline(self.kb).retrieve_only(enriched[1]["questions"][0])
+        self.assertNotIn("@question", result.contexts[0].chunk.chunk_id)          # 命中视图也换回了片段
+
+    def test_turning_enrichment_off_removes_views(self):
+        calls = self.llm.calls
+        job = self.library.rebuild(self.kb, {**self.library.info(self.kb)["settings"],
+                                             "enrich": {"context": True, "describe": True, "questions": 0}})
+        job = self.library.jobs.wait(job.id)
+        self.assertTrue(job.verify["ok"], job.verify["problems"])
+        self.assertGreater(self.llm.calls, calls)                              # 问题个数变了，提示词不同，要重新调用
+        kb = self.library.pipeline(self.kb).kb
+        self.assertNotIn("views", kb.stats())
+
+    def test_enrichment_requires_an_llm(self):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"LLM_API_KEY": "", "LLM_BASE_URL": ""}):
+            with self.assertRaises(ValueError) as ctx:
+                self.library.validate({"enrich": {"context": True}})
+        self.assertIn("大模型", str(ctx.exception))
+
+
 class TestBuildFromConfig(unittest.TestCase):
     def test_enrich_requires_a_real_llm(self):
         from learn_rag.core.config import load_config

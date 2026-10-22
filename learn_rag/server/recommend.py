@@ -278,6 +278,20 @@ def recommend(stats: dict[str, Any]) -> dict[str, Any]:
         settings["retrieval"]["weights"] = {"vector": 1.0, "bm25": 1.0, "sparse": 1.0}
         reasons["fusion"] = "BGE-M3 能生成稀疏向量：向量、BM25、稀疏三路等权融合，权重可以用评测集调（learn-rag tune）"
 
+    # 建库增强：每个子块一次大模型调用。背景句对所有文档都有用；有表格、图片时再概括表格、描述图片。
+    # 假设问题和章节摘要会让向量数量成倍增加，收益要用评测集验证，默认不开
+    enrich = environment.enrich_report()
+    if enrich["available"]:
+        calls = max(1, stats["tokens"] // chunk_size)
+        visual = stats["tables"] or stats["images"]
+        settings["enrich"] = {"context": True, "describe": bool(visual), "questions": 0, "summaries": False}
+        reasons["enrich"] = (f"已配置大模型：给每个子块补一句它在全文里的背景（约 {calls} 次调用，结果有缓存，重建不重复调用），"
+                             "补上片段里省略的主语、产品名，减少漏召回")
+        if visual:
+            reasons["enrich"] += (f"；文档有 {stats['tables']} 张表格、{stats['images']} 张图片，顺带概括表格"
+                                  + ("、描述图片" if enrich["vlm"] else "（未配置视觉模型，不描述图片）"))
+        reasons["enrich"] += "。假设问题、章节摘要先不开，用评测集验证后再决定"
+
     # 向量库
     if settings["index"]["type"] == "chroma":
         reasons["index"] = "Chroma 写入即落盘，支持增量更新和元数据过滤"

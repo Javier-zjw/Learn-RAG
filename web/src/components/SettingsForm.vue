@@ -53,6 +53,10 @@ const transformNote = computed(() => {
   if (!props.env.llm) return options.find((t) => !t.available)?.note ?? ''
   return options.find((t) => t.type === settings.value.retrieval.query_transform)?.note ?? ''
 })
+const enrichOn = computed(() => {
+  const e = settings.value.enrich
+  return e.context || e.describe || e.summaries || e.questions > 0
+})
 const sparseAvailable = computed(() => SPARSE_ENCODERS.includes(settings.value.encoder.type))
 
 function pickEncoder(type: string, model: string) {
@@ -143,6 +147,31 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
           <template #prepend>{{ MODEL_INPUT[settings.encoder.type] }}</template>
         </el-input>
       </Transition>
+    </FormField>
+
+    <div class="section-label">建库增强</div>
+    <FormField label="大模型增强" :reason="reasons.enrich" :flash="flashing.has('enrich')"
+               :hint="env.enrich.available ? '生成的文字只用于检索，不改动分块正文；改了要重建' : env.enrich.note">
+      <div class="enrich">
+        <label class="switch-row">
+          <el-switch v-model="settings.enrich.context" :disabled="!env.enrich.available" size="small" />
+          <span><b>补背景</b>：每个子块一句它在全文里的背景，补上省略的主语、产品名</span>
+        </label>
+        <label class="switch-row">
+          <el-switch v-model="settings.enrich.describe" :disabled="!env.enrich.available" size="small" />
+          <span><b>描述图表</b>：概括表格；{{ env.enrich.vlm ? '图片和图表交给视觉模型描述' : '未配置视觉模型（OCR_MODEL），不描述图片' }}</span>
+        </label>
+        <label class="switch-row">
+          <el-switch v-model="settings.enrich.summaries" :disabled="!env.enrich.available" size="small" />
+          <span><b>章节摘要</b>：每个父块一段摘要，单独生成向量，对应“这一节讲什么”一类的提问</span>
+        </label>
+        <label class="switch-row">
+          <el-input-number v-model="settings.enrich.questions" :min="0" :max="5" size="small"
+                           controls-position="right" :disabled="!env.enrich.available" class="questions" />
+          <span><b>假设问题</b>：每个子块生成几个它能回答的问题，各自一个向量；0 表示不生成</span>
+        </label>
+      </div>
+      <div v-if="env.enrich.available && enrichOn" class="enrich-cost">每个子块调用一次大模型，结果有缓存，重建不会重复调用</div>
     </FormField>
     </template>
 
@@ -310,6 +339,12 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
   overflow: hidden;
 }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.enrich { display: flex; flex-direction: column; gap: 8px; }
+.switch-row { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.5; color: var(--text-2); cursor: pointer; }
+.switch-row b { color: var(--text); font-weight: 500; }
+.switch-row .el-switch { flex: none; margin-top: 1px; }
+.switch-row .questions { flex: none; width: 76px; }
+.enrich-cost { margin-top: 6px; font-size: 12px; color: var(--text-3); }
 .weights { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .weight { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .weight-label { font-size: 12px; color: var(--text-2); }

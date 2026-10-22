@@ -34,6 +34,15 @@ export function chunkerSummary(s: Settings): string {
   return `${CHUNKER_LABELS[c.type]} · ${c.chunk_size} 字 · 重叠 ${c.chunk_overlap ?? 0}`
 }
 
+/** 开了哪些建库增强；全关时返回空串 */
+export function enrichSummary(s: Settings): string {
+  const e = s.enrich
+  if (!e) return ''
+  const parts = [e.context && '背景', e.describe && '图表描述', e.questions > 0 && `${e.questions} 个假设问题`,
+                 e.summaries && '章节摘要'].filter(Boolean)
+  return parts.length ? `增强：${parts.join(' · ')}` : ''
+}
+
 export function encoderSummary(s: Settings): string {
   return s.encoder.type === 'hashing' ? 'Hashing' : s.encoder.model
 }

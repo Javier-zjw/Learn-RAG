@@ -43,6 +43,9 @@ _PACKAGES = [
 # 稀疏通道（bge-m3 的稀疏向量）只有 embedding 选 BGE-M3（FlagEmbedding）时才能开
 DEFAULT_FUSION = {"weights": {"vector": 1.0, "bm25": 1.0, "sparse": 0.0}, "rrf_k": 60, "query_transform": "none"}
 
+# 建库增强（ingest/enrich.py）默认全关：每个子块都要调用一次大模型，由用户决定要不要花这笔钱
+ENRICH_OFF = {"context": False, "describe": False, "questions": 0, "summaries": False}
+
 # 本地模型的默认名称：HuggingFace 上的名字（首次使用自动下载），也可以在 .env 里改成已下载好的本地目录
 BGE_M3 = "BAAI/bge-m3"
 BGE_RERANKER = "BAAI/bge-reranker-v2-m3"
@@ -85,6 +88,25 @@ def query_transforms() -> list[dict[str, Any]]:
         {"type": "hyde", "label": "HyDE", "available": llm,
          "note": note or "大模型先写一段假设答案，用它和原问题一起检索，口语化、很短的问题受益最大"},
     ]
+
+
+def has_vlm() -> bool:
+    """配置了视觉模型（OCR_MODEL），建库增强时可以描述图片和图表；地址和密钥没配时沿用 LLM_*。"""
+    load_env()
+    return bool(os.getenv("OCR_MODEL")) and has_ocr()
+
+
+def enrich_report() -> dict[str, Any]:
+    """建库增强能不能开：要大模型；描述图片还要视觉模型。"""
+    llm, vlm = has_llm(), has_vlm()
+    return {
+        "available": llm,
+        "vlm": vlm,
+        "note": ("建库时每个子块调用一次大模型，结果有缓存，重建不会重复调用" if llm
+                 else "未配置大模型（.env 中的 LLM_BASE_URL / LLM_API_KEY）"),
+        "vlm_note": ("图片和图表交给视觉模型（OCR_MODEL）描述" if vlm
+                     else "未配置视觉模型（.env 中的 OCR_MODEL），只概括表格、不描述图片"),
+    }
 
 
 def has_ocr() -> bool:
@@ -195,6 +217,7 @@ def default_settings() -> dict[str, Any]:
             ".docx": ["docling", "docx"] if has_docling() else ["docx"],
         },
         "ocr": False,
+        "enrich": dict(ENRICH_OFF),
         "reranker": {"type": ranker["type"], "model": ranker["model"]},
         # 有真正的精排时召回 50 个候选给它挑；词重叠精排判别力有限，候选多了反而引入噪声
         "retrieval": {"candidate_k": 50 if ranker["type"] == "api" else 20, "top_k": 5, **DEFAULT_FUSION},
@@ -219,5 +242,6 @@ def report() -> dict[str, Any]:
         "packages": packages,
         "parsers": parser_choices(),
         "ocr": has_ocr(),
+        "enrich": enrich_report(),
         "defaults": default_settings(),
     }
