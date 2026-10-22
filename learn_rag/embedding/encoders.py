@@ -30,6 +30,7 @@ from pathlib import Path
 
 from ..core.interfaces import TextEncoder
 from ..core.registry import registry
+from ..core.local_models import shared_model
 from ..core.text import char_ngrams, index_tokens
 
 logger = logging.getLogger(__name__)
@@ -213,12 +214,20 @@ class SentenceTransformerEncoder(TextEncoder):
         batch_size: int = 32,
         device: str | None = None,
     ) -> None:
-        from sentence_transformers import SentenceTransformer  # 延迟导入：不装也能用别的实现
-
-        self._model = SentenceTransformer(model_name, device=device)
         self.query_prefix, self.doc_prefix, self.batch_size = query_prefix, doc_prefix, batch_size
-        self.dimension = int(self._model.get_sentence_embedding_dimension())
-        self.model_name = model_name
+        self.model_name, self.device = model_name, device
+
+    @property
+    def _model(self):
+        """
+        第一次编码时才加载模型，并在进程内按模型名共享：bge-m3 有 2 GB，打开知识库查看分块用不到它，
+        几个知识库用同一个模型时也只该加载一份。
+        """
+        return shared_model("sentence_transformer", self.model_name, self.device)
+
+    @property
+    def dimension(self) -> int:
+        return int(self._model.get_sentence_embedding_dimension())
 
     def signature(self) -> str:
         # 文档前缀会改变存进索引的向量，查询前缀决定查询向量和文档向量是否可比，两者都算模型身份的一部分

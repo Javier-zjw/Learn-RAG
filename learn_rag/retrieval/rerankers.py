@@ -19,6 +19,7 @@ from collections.abc import Sequence
 
 from ..core.interfaces import LLM, Reranker
 from ..core.registry import registry
+from ..core.local_models import shared_model
 from ..core.text import index_tokens
 from ..core.types import ScoredChunk
 
@@ -75,17 +76,24 @@ class CrossEncoderReranker(Reranker):
     """
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-base", batch_size: int = 16,
-                 device: str | None = None) -> None:
-        from sentence_transformers import CrossEncoder
-        self._model = CrossEncoder(model_name, device=device)
-        self.batch_size = batch_size
+                 device: str | None = None, max_length: int = 512) -> None:
+        self.model_name, self.batch_size, self.device, self.max_length = model_name, batch_size, device, max_length
+
+    def _load(self):
+        """
+        第一次精排时才加载模型，并在进程内按模型名共享：管线在建库时也会被构建，而建库用不到精排，
+        bge-reranker-v2-m3 有 2 GB，不该为了建库加载（更不该因为它下载失败让建库失败）。
+        """
+        model = shared_model("cross_encoder", self.model_name, self.device)
+        model.max_length = self.max_length      # 片段超过 512 token 时截断，长度不同的模型共用同一份权重也没问题
+        return model
 
     def rerank(self, query: str, candidates: Sequence[ScoredChunk], top_k: int) -> list[ScoredChunk]:
         if not candidates:
             return []
 
         pairs = [(query, c.text) for c in candidates]
-        scores = self._model.predict(pairs, batch_size=self.batch_size)
+        scores = self._load().predict(pairs, batch_size=self.batch_size)
         ranked = sorted(zip(candidates, scores), key=lambda kv: -float(kv[1]))[:top_k]
         return [ScoredChunk(chunk=c.chunk, score=float(s), source="rerank:cross") for c, s in ranked]
 
