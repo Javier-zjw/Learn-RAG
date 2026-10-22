@@ -88,6 +88,14 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **元数据不能在存储层走样**：向量库只能存标量时，完整元数据序列化成 JSON 一起存、取回时还原（见 `chroma_index.py`），不要拼接或截断列表。
 - 改切分规则后用 `export_parsed.py --replay` 重新生成 `samples/parsing_results/`，对照 `chunks.jsonl` 检查效果。
 
+## 建库增强（`learn_rag/ingest/enrich.py`）
+
+- **只增强检索，不改正文**：增强内容写在片段元数据 `enrich`（`ENRICH_KEY`）里。`context`、`description` 经 `Chunk.index_text` 拼在正文前进向量、BM25、稀疏索引；`questions`、`summary` 经 `Chunk.index_views` 变成视图记录。交给大模型、页面展示、原文对齐一律用 `chunk.text`，建索引一律用 `index_text`，不要混用。
+- **视图记录**：由 `KnowledgeBase` 生成（`_views`），id 为 `<片段 id>@<类型><序号>`，`view_of` 指向所属片段。正文是所属片段的正文，向量来自 `view_text`；只进向量索引，不进 BM25 / 稀疏索引；`expand` 先换回所属片段再换父块；`chunks_of`、`stats()["chunks"]` 不含视图。新增"粒度"时只改 `index_views`，不要在知识库里加分支。
+- **成本控制**：每个子块只调用一次大模型（各字段合在一个 JSON 里），结果按"任务 + 模型 + 输入"缓存；提示词或输出格式改了要把 `VERSION` 加一。单次失败记在 `enrich.failed`，不中断建库，`_is_current` 让这篇文档下次重写、只重试失败的调用。
+- **指纹**：`ChunkEnricher.signature()` 进入文档指纹，要包含所有会改变增强结果的参数；不开增强时指纹不变。
+- 增强需要真实大模型，`from_config` 遇到 `echo` 直接报错；测试用假 LLM（见 `tests/test_enrich.py`）。
+
 ## 向量化与存储（`learn_rag/store/`）
 
 - **片段库是唯一的数据来源**：`VectorIndex` 保存子块（向量 + 正文 + 元数据）和父块（`add` 不传向量，只存储）；BM25 倒排、父块表、文档清单由 `KnowledgeBase._sync` 从 `chunks()` 重建。不要再给派生数据单独落盘。
@@ -111,6 +119,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 
 - **后端只编排、不重写建库逻辑**：解析走 `FileSource.load_file`，写入、增量、模型检查、核对都走 `KnowledgeBase`。`app.py` 只做参数解析和错误码翻译（`NotFound` → 404、`ValueError` → 400、`Busy` → 409），逻辑都放在 `Library`。
 - **一个知识库一个目录，参数固定**：改参数走 `rebuild`，只有换 embedding 模型或向量库参数时才清空片段库。知识库 id 随机生成，不复用目录。
+- **建库增强**（`enrich`）属于建库参数，改了走 `rebuild`（不清空片段库，靠指纹逐篇重写）；结果缓存在项目的 `.cache/enrich`，各知识库共用；视觉模型的地址和密钥只在 `_config` 运行时从环境变量读取。
 - **页面参数 → 配置的翻译只在一处**：`Library.validate` 和 `Library._config`。新增一个页面参数时同时改 `validate`、`environment.default_settings` 和前端 `SettingsForm.vue`。
 - **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
 - **一条命令启停全部**：`learn-rag serve` 负责构建前端（`server/frontend.py`）和启停 MinerU（`server/mineru_service.py`，复用 `scripts/start_mineru.sh` / `stop_mineru.sh`，不要在 Python 里重写启停逻辑）。MinerU 在后台启动，不能阻塞页面服务；退出路径（Ctrl+C、SIGTERM、关闭终端的 SIGHUP、atexit）都要能关掉它，`stop` 必须可以重复调用。
