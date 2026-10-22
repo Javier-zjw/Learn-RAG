@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshRight, Delete, Search, View, EditPen, Setting } from '@element-plus/icons-vue'
 import { api, watchJob, type DocRow, type Job, type KbInfo, type Settings } from '../api'
-import { STATUS, bytes, chunkerSummary, clone, encoderSummary, rerankerSummary, settingsError, timeAgo, typeGroup } from '../format'
+import { STATUS, bytes, chunkerSummary, clone, encoderSummary, rerankerSummary, retrievalError, settingsError, timeAgo, typeGroup } from '../format'
 import { loadEnv, refreshKbs, store } from '../store'
 import JobPanel from '../components/JobPanel.vue'
 import FileDrop, { type Entry } from '../components/FileDrop.vue'
@@ -322,7 +322,8 @@ async function submitRebuild() {
                 title="精排和召回参数只影响查询，保存后立即生效，不需要重建；本地精排模型在第一次查询时加载" />
       <template #footer>
         <el-button @click="retrievalOpen = false">取消</el-button>
-        <el-button type="primary" :loading="savingRetrieval" @click="saveRetrieval">保存</el-button>
+        <el-button type="primary" :loading="savingRetrieval"
+                   :disabled="!retrievalSettings || !!retrievalError(retrievalSettings)" @click="saveRetrieval">保存</el-button>
       </template>
     </el-dialog>
 

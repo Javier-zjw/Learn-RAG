@@ -70,6 +70,7 @@ watch(
       docx_parser: () => same(now.parsers['.docx'], rec.settings.parsers['.docx']),
       ocr: () => now.ocr === rec.settings.ocr,
       reranker: () => same(now.reranker, rec.settings.reranker),
+      fusion: () => same(now.retrieval.weights, rec.settings.retrieval.weights),
     }
     for (const key of Object.keys(reasons)) if (checks[key] && !checks[key]()) delete reasons[key]
   },

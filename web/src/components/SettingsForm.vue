@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { CircleCheckFilled } from '@element-plus/icons-vue'
-import type { EnvReport, Settings } from '../api'
-import { settingsError } from '../format'
+import type { Channel, EnvReport, Settings } from '../api'
+import { SPARSE_ENCODERS, chunkerError, retrievalError } from '../format'
 import FormField from './FormField.vue'
 
 const settings = defineModel<Settings>({ required: true })
@@ -39,10 +39,26 @@ watch(
   },
 )
 
-const chunkError = computed(() => settingsError(settings.value))
+const chunkError = computed(() => chunkerError(settings.value))
+const fusionError = computed(() => retrievalError(settings.value))
+
+const CHANNELS: { key: Channel; label: string }[] = [
+  { key: 'vector', label: '向量' },
+  { key: 'bm25', label: 'BM25' },
+  { key: 'sparse', label: '稀疏' },
+]
+// 查询改写的说明跟着选项走；没配大模型时说明为什么只能选"不改写"
+const transformNote = computed(() => {
+  const options = props.env.query_transforms
+  if (!props.env.llm) return options.find((t) => !t.available)?.note ?? ''
+  return options.find((t) => t.type === settings.value.retrieval.query_transform)?.note ?? ''
+})
+const sparseAvailable = computed(() => SPARSE_ENCODERS.includes(settings.value.encoder.type))
 
 function pickEncoder(type: string, model: string) {
   settings.value.encoder = { type, model }
+  // 能生成稀疏向量的模型默认三路等权；换成别的模型时关掉稀疏通道，否则建库会被拒绝
+  settings.value.retrieval.weights.sparse = SPARSE_ENCODERS.includes(type) ? 1 : 0
 }
 
 function pickReranker(type: string, model: string) {
@@ -163,6 +179,32 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
         <el-input-number v-model="settings.retrieval.top_k" :min="1" :max="20" controls-position="right" />
       </FormField>
     </div>
+    <FormField label="融合权重" :reason="reasons.fusion" :flash="flashing.has('fusion')" :error="fusionError"
+               :hint="sparseAvailable ? '各路按名次做 RRF 融合，权重越大这一路越说了算；0 表示不用这一路'
+                                      : '0 表示不用这一路；稀疏召回需要 embedding 选 BGE-M3（稠密 + 稀疏）'">
+      <div class="weights">
+        <label v-for="c in CHANNELS" :key="c.key" class="weight">
+          <span class="weight-label">{{ c.label }}</span>
+          <el-input-number v-model="settings.retrieval.weights[c.key]" :min="0" :max="10" :step="0.5"
+                           :precision="1" controls-position="right"
+                           :disabled="c.key === 'sparse' && !sparseAvailable" />
+        </label>
+      </div>
+    </FormField>
+    <div class="pair">
+      <FormField label="RRF 常数 k" hint="越小越看重各路的第一名；60 是常用值">
+        <el-input-number v-model="settings.retrieval.rrf_k" :min="1" :max="1000" :step="10"
+                         controls-position="right" />
+      </FormField>
+      <FormField label="查询改写" :hint="transformNote">
+        <el-select v-model="settings.retrieval.query_transform">
+          <el-option v-for="t in env.query_transforms" :key="t.type" :value="t.type" :label="t.label"
+                     :disabled="!t.available">
+            <span>{{ t.label }}</span><span v-if="!t.available" class="opt-note">需要大模型</span>
+          </el-option>
+        </el-select>
+      </FormField>
+    </div>
 
     <el-collapse v-if="part !== 'retrieval'" v-model="advancedOpen" class="advanced">
       <el-collapse-item name="advanced" title="高级：向量库、解析器、OCR">
@@ -268,6 +310,9 @@ const chromaAvailable = computed(() => props.env.packages.some((p) => p.name.sta
   overflow: hidden;
 }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.weights { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.weight { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.weight-label { font-size: 12px; color: var(--text-2); }
 .enc-check { color: var(--primary); font-size: 16px; opacity: 0; transform: scale(0.6); transition: all 0.2s var(--ease); }
 .encoder.selected .enc-check { opacity: 1; transform: scale(1); }
 .model-input { margin-top: 2px; }

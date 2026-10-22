@@ -15,7 +15,18 @@ export interface Settings {
   parsers: Record<string, string[]>
   ocr: boolean
   reranker: { type: string; model: string }
-  retrieval: { candidate_k: number; top_k: number }
+  retrieval: RetrievalSettings
+}
+
+export type Channel = 'vector' | 'bm25' | 'sparse'
+
+// 各路召回按权重做 RRF 融合（权重为 0 的不参与），可选在最外层套查询改写
+export interface RetrievalSettings {
+  candidate_k: number
+  top_k: number
+  weights: Record<Channel, number>
+  rrf_k: number
+  query_transform: string
 }
 
 export interface EncoderOption {
@@ -36,6 +47,8 @@ export interface ParserChoice {
 export interface EnvReport {
   encoders: EncoderOption[]
   rerankers: EncoderOption[]
+  query_transforms: { type: string; label: string; available: boolean; note: string }[]
+  llm: boolean
   keys: { name: string; label: string; configured: boolean }[]
   packages: { name: string; installed: boolean; install: string }[]
   parsers: Record<string, ParserChoice[]>

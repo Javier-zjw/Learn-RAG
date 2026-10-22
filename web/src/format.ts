@@ -38,11 +38,20 @@ export function encoderSummary(s: Settings): string {
   return s.encoder.type === 'hashing' ? 'Hashing' : s.encoder.model
 }
 
+/** 能同时生成稀疏向量、可以开稀疏召回的 embedding */
+export const SPARSE_ENCODERS = ['bge_m3']
+
 const RERANKER_LABELS: Record<string, string> = { lexical: '词重叠精排', identity: '不精排' }
+const CHANNEL_LABELS: Record<string, string> = { vector: '向量', bm25: 'BM25', sparse: '稀疏' }
+const TRANSFORM_LABELS: Record<string, string> = { multi_query: '多查询改写', hyde: 'HyDE' }
 
 export function rerankerSummary(s: Settings): string {
+  const r = s.retrieval
+  const channels = Object.entries(r.weights).filter(([, w]) => w > 0).map(([c]) => CHANNEL_LABELS[c] ?? c)
   const name = RERANKER_LABELS[s.reranker.type] ?? `精排 ${s.reranker.model.split('/').pop()}`
-  return `${name} · ${s.retrieval.candidate_k} → ${s.retrieval.top_k}`
+  const parts = [channels.join(' + '), name, `${r.candidate_k} → ${r.top_k}`]
+  if (TRANSFORM_LABELS[r.query_transform]) parts.unshift(TRANSFORM_LABELS[r.query_transform])
+  return parts.join(' · ')
 }
 
 export const STATUS: Record<FileStatus, { label: string; type: 'info' | 'primary' | 'success' | 'warning' | 'danger' }> = {
@@ -75,11 +84,23 @@ export function typeGroup(type: string): string {
 }
 
 /** 前端先拦一道明显不合法的参数（后端还会再校验一次），返回错误信息，没问题返回空字符串 */
+/** 表单里第一处不合法的参数；空串表示可以提交 */
 export function settingsError(s: Settings): string {
+  return chunkerError(s) || retrievalError(s)
+}
+
+export function chunkerError(s: Settings): string {
   const c = s.chunker
   if (!c.chunk_size || c.chunk_size < 20) return '子块大小至少 20'
   if (c.type === 'structure' && c.parent_size && c.parent_size <= c.chunk_size) return '父块必须大于子块；设为 0 表示不生成父块'
   if (c.type !== 'structure' && (c.chunk_overlap ?? 0) >= c.chunk_size) return '重叠必须小于块大小'
+  return ''
+}
+
+export function retrievalError(s: Settings): string {
+  const w = s.retrieval.weights
+  if (!(w.vector > 0 || w.bm25 > 0 || w.sparse > 0)) return '至少要有一路召回的权重大于 0'
+  if (w.sparse > 0 && !SPARSE_ENCODERS.includes(s.encoder.type)) return '稀疏召回需要 embedding 选 BGE-M3（稠密 + 稀疏）'
   return ''
 }
 
