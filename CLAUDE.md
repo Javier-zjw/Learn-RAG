@@ -113,6 +113,13 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **前端约定**：请求都走 `src/api.ts`；颜色只用 `styles.css` 里的令牌（浅色、深色各一套）；分块底色要保证正文对比度不低于 12:1；动画要尊重 `prefers-reduced-motion`；`defineModel` 在同一轮里只赋值一次（连续赋值会读到旧值、互相覆盖）。
 - 改动后跑 `python -m unittest tests.test_server`、`cd web && npm run build`（含类型检查），再用 `learn-rag serve` 在浏览器里走一遍“上传 → 推荐 → 建库 → 查看分块”。
 
+## 评测（`learn_rag/eval/`）
+
+- **证据级优先**：评测集用 `evidence`（逐字摘录的原文）标注答案所在位置，不记分块 id —— 分块 id 随切分参数变化，记了就没法比较切分参数。证据是否被召回统一用 `core/text.py` 的 `coverage` 判断（只比较字母、数字和汉字）。
+- **缺什么跳什么**：指标用 `needs_gold_docs`、`needs_gold_answer`、`needs_evidence`、`needs_generation` 声明依赖，缺标注或只评检索时由 runner 跳过，绝不记 0 分。新增指标时声明清楚。
+- **出题要过检查**（`eval/synth.py`）：证据必须出现在原文里、问题不能依赖"本文/上文"等指代、去重；丢弃的原因要计数输出，不能悄悄丢掉。
+- 页面上建的知识库用 `learn-rag evalset --kb <id>` 出题、`learn-rag eval --kb <id> --retrieval-only` 评测；改检索、切分、模型后用同一份评测集对比 `evidence_*` 指标。
+
 ## 代码风格
 
 - 注释与 docstring 使用中文，重点解释「为什么这样设计」和容易踩的坑，与现有代码密度保持一致。
