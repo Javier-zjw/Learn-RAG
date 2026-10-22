@@ -85,7 +85,7 @@ function open(row: DocRow) {
 async function removeDoc(row: DocRow) {
   try {
     await api.deleteDocument(kbId.value, row.doc_id)
-    ElMessage.success(`已删除 ${row.doc_id}`)
+    ElMessage.success(`正在删除 ${row.doc_id}`)
     await load()
     refreshKbs()
   } catch (err) {

@@ -13,6 +13,12 @@ server.library —— 知识库管理。页面上的每个操作（新建、追�
 建库本身完全复用 KnowledgeBase：增量跳过、模型一致性检查、完整性核对都在那里，这里只负责
 把页面上的参数翻译成配置、逐个文件推进并记录状态。知识库 id 是随机生成的，删掉再建同名知识库
 也不会复用旧目录（Chroma 在同一进程里会缓存打开过的路径）。
+
+写知识库的操作（建库、追加、重建、删除文档）都变成任务提交到队列（jobs.py），由 worker 执行（run_job）；
+页面服务和 worker 可以是两个进程：
+  - 清单 kb.json 的读改写用跨进程的文件锁保护（_KbLock）；
+  - 片段库每次被写入，清单里的 revision 加一，读的一方发现 revision 变了就重新打开知识库 ——
+    另一个进程写进 Chroma 的数据，本进程已打开的对象看不到（派生的 BM25、文档清单也是旧的）。
 """
 
 from __future__ import annotations
@@ -26,8 +32,14 @@ import shutil
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:      # Windows
+    fcntl = None
 
 from ..core.config import load_config
 from ..core.registry import registry
@@ -36,10 +48,13 @@ from ..parsing.source import FileSource
 from ..pipeline.rag import RagPipeline
 from . import environment
 from .chunk_view import document_view
-from .mineru_service import STARTING, MinerUService
+from ..core.types import ENRICH_KEY
+from ..parsing.external import mineru_ready, mineru_server_url
 from .preview import Preview, PreviewUnavailable
-from .jobs import DONE, EMBEDDING, FAILED, PARSING, SKIPPED, WAITING, FileProgress, Job, JobRunner, capture_warnings
+from .jobs import (DONE, EMBEDDING, FAILED, PARSING, REMOVING, SKIPPED, WAITING, FileProgress, Job, JobStore,
+                   capture_warnings)
 from .uploads import Staging, safe_relative
+from .worker import Interrupted, JobWorker
 
 logger = logging.getLogger(__name__)
 
@@ -66,18 +81,28 @@ class Busy(RuntimeError):
 
 
 class Library:
-    def __init__(self, root: str | Path, runner: JobRunner | None = None, mineru: MinerUService | None = None) -> None:
+    def __init__(self, root: str | Path, *, worker: bool = False, mineru_wait: float = 180) -> None:
+        """
+        worker=True 时在本进程里起一个 worker 线程执行任务（测试、脚本、不想多开进程时用）；
+        默认不起：任务由 learn-rag worker 进程执行（learn-rag serve 会启动它）。
+        命令行评测、调参打开 Library 只是为了读，千万不能顺手执行队列里的任务。
+        mineru_wait：任务要用 MinerU 而服务还没就绪时最多等多少秒。
+        """
         self.root = Path(root)
-        self.mineru = mineru
         self.kbs_dir = self.root / "kbs"
         self.kbs_dir.mkdir(parents=True, exist_ok=True)
         self.staging = Staging(self.root / "uploads")
         self.preview = Preview(self.root / "preview")      # 按文件内容缓存，多个知识库共用
+        self.jobs = JobStore(self.root / "jobs.db")
+        self.mineru_wait = mineru_wait
         self._digests: dict[tuple[str, int, int], str] = {}
-        self.jobs = runner or JobRunner()
-        self._pipes: dict[str, tuple[str, RagPipeline]] = {}   # kb_id -> (参数, 管线)
-        self._locks: dict[str, threading.RLock] = {}
+        self._pipes: dict[str, tuple[str, RagPipeline]] = {}   # kb_id -> (参数和 revision, 管线)
+        self._locks: dict[str, _KbLock] = {}
         self._guard = threading.Lock()
+        self.worker: JobWorker | None = None
+        if worker:
+            self.worker = JobWorker(self)
+            self.worker.start()
 
     # ------------------------------------------------------------------ 知识库
     def pipeline(self, kb_id: str) -> RagPipeline:
@@ -105,7 +130,7 @@ class Library:
             "files": {path: _file_entry(directory / "files" / path) for path in files},
         }
         self._write_manifest(manifest)
-        job = self._submit(kb_id, "build", files, reset=False)
+        job = self.jobs.submit(kb_id, "build", files)
         return {"kb": self.info(kb_id), "job": job.snapshot()}
 
     def info(self, kb_id: str) -> dict[str, Any]:
@@ -141,6 +166,7 @@ class Library:
                 # 先清空 Chroma 集合再删目录：Chroma 在进程里还开着这些文件
                 registry.build("index", self._config(kb_id, manifest["settings"], reset=True)["index"])
             shutil.rmtree(self.kbs_dir / kb_id, ignore_errors=True)
+        self.jobs.forget(kb_id)
 
     def add_files(self, kb_id: str, upload_id: str) -> Job:
         """追加文件，沿用知识库的参数；同名文件覆盖旧版本（知识库按指纹识别出变化，替换旧片段）。"""
@@ -153,7 +179,7 @@ class Library:
             for path in files:
                 manifest["files"][path] = _file_entry(self.kbs_dir / kb_id / "files" / path)
             self._write_manifest(manifest)
-        return self._submit(kb_id, "append", files, reset=False)
+        return self.jobs.submit(kb_id, "append", files)
 
     def rebuild(self, kb_id: str, settings: dict[str, Any] | None = None) -> Job:
         """
@@ -174,23 +200,17 @@ class Library:
             for entry in manifest["files"].values():
                 entry.update(status=WAITING, message="")
             self._write_manifest(manifest)
-        return self._submit(kb_id, "rebuild", sorted(manifest["files"]), reset=reset)
+        return self.jobs.submit(kb_id, "rebuild", sorted(manifest["files"]), reset=reset)
 
     # ------------------------------------------------------------------ 文档
-    def remove_document(self, kb_id: str, doc_id: str) -> None:
+    def remove_document(self, kb_id: str, doc_id: str) -> Job:
+        """删除文档也是写片段库，和建库一样交给 worker 执行，返回任务。"""
         manifest = self._manifest(kb_id)
         if doc_id not in manifest["files"]:
             raise NotFound(f"知识库里没有文档 {doc_id}")
         if self.jobs.busy(kb_id):
             raise Busy("这个知识库正在建库，完成后再删除文档")
-        with self._lock(kb_id):
-            pipe = self._pipeline(kb_id)
-            pipe.kb.remove([doc_id])
-            pipe.kb.save(str(self._persist_dir(kb_id)))
-            (self.kbs_dir / kb_id / "files" / safe_relative(doc_id)).unlink(missing_ok=True)
-            manifest = self._manifest(kb_id)
-            manifest["files"].pop(doc_id, None)
-            self._write_manifest(manifest)
+        return self.jobs.submit(kb_id, "remove", [doc_id])
 
     def document(self, kb_id: str, doc_id: str) -> dict[str, Any]:
         manifest = self._manifest(kb_id)
@@ -375,20 +395,30 @@ class Library:
             cfg["enrich"] = _enrich_config(settings["enrich"], parsing)
         return cfg
 
-    # ------------------------------------------------------------------ 建库任务
-    def _submit(self, kb_id: str, kind: str, files: list[str], *, reset: bool) -> Job:
-        return self.jobs.submit(kb_id, kind, files, lambda job: self._run(job, reset=reset))
-
-    def _run(self, job: Job, *, reset: bool) -> None:
-        """在后台线程里执行：逐个文件解析、切分、向量化，最后落盘并核对完整性。"""
+    # ------------------------------------------------------------------ 建库任务（worker 里执行）
+    def run_job(self, job: Job, *, should_stop: Callable[[], bool] = lambda: False) -> None:
+        """
+        执行一个任务：逐个处理还在"等待"的文件（重试时只剩上次没完成的），最后落盘并核对完整性。
+        should_stop() 为真时在两个文件之间停下（抛 Interrupted），任务放回队列，下次接着做。
+        """
+        if job.kind == "remove":
+            self._remove(job)
+            return
         kb_id = job.kb_id
         with self._lock(kb_id):
-            pipe = self._pipeline(kb_id, reset=reset)
+            pipe = self._pipeline(kb_id, reset=job.reset)
             cfg = self._config(kb_id, self._manifest(kb_id)["settings"])
-        self._wait_for_mineru(job, cfg)
+        if job.reset:              # 已经清空过了：中断后重试不能再清空一遍，否则做完的又要重做
+            job.reset = False
+            job.touch()
+        self._wait_for_mineru(job, cfg, should_stop)
         files_dir = self.kbs_dir / kb_id / "files"
         source = FileSource(str(files_dir), **cfg["parsing"])
         for progress in job.files:
+            if progress.status != WAITING:
+                continue
+            if should_stop():
+                raise Interrupted()
             info = self._process(job, progress, pipe, source, files_dir)
             self._record(kb_id, progress, info)
         with self._lock(kb_id):
@@ -398,51 +428,89 @@ class Library:
             manifest = self._manifest(kb_id)
             manifest["verify"] = job.verify
             manifest["updated_at"] = time.time()
-            self._write_manifest(manifest)
+            self._data_changed(manifest)
         job.touch()
 
-    def _wait_for_mineru(self, job: Job, cfg: dict[str, Any]) -> None:
-        """要用 MinerU 解析而它还在启动时先等它就绪，否则这批 PDF 会全部退回 PyMuPDF。"""
+    def _remove(self, job: Job) -> None:
+        kb_id, progress = job.kb_id, job.files[0]
+        progress.status = REMOVING
+        job.touch()
+        with self._lock(kb_id):
+            pipe = self._pipeline(kb_id)
+            pipe.kb.remove([progress.path])
+            pipe.kb.save(str(self._persist_dir(kb_id)))
+            (self.kbs_dir / kb_id / "files" / safe_relative(progress.path)).unlink(missing_ok=True)
+            manifest = self._manifest(kb_id)
+            manifest["files"].pop(progress.path, None)
+            manifest["updated_at"] = time.time()
+            self._data_changed(manifest)
+        progress.status = DONE
+        job.touch()
+
+    def _wait_for_mineru(self, job: Job, cfg: dict[str, Any], should_stop: Callable[[], bool]) -> None:
+        """
+        要用 MinerU 解析而它的服务还没就绪（learn-rag serve 刚启动、模型还在加载）时先等一会儿，
+        否则这批 PDF 会全部退回 PyMuPDF。worker 可能在另一个进程，所以用 HTTP 健康检查判断，而不是看内存里的状态。
+        """
+        url = mineru_server_url()
         uses_mineru = any("mineru" in chain for chain in cfg["parsing"]["parsers"].values())
-        if not (self.mineru and uses_mineru and self.mineru.state == STARTING):
+        if not (url and uses_mineru) or mineru_ready(url, cache=0):
             return
         job.notice = "等待 MinerU 服务就绪（首次启动要加载模型）……"
         job.touch()
-        ready = self.mineru.wait(self.mineru.timeout)
-        job.notice = "" if ready else self.mineru.message
+        deadline = time.time() + self.mineru_wait
+        while time.time() < deadline and not mineru_ready(url, cache=0):
+            if should_stop():
+                raise Interrupted()
+            time.sleep(2)
+        ready = mineru_ready(url, cache=0)
+        job.notice = "" if ready else f"MinerU 服务 {self.mineru_wait:.0f} 秒内没有就绪，PDF 退回 PyMuPDF 解析"
         job.touch()
 
     def _process(self, job: Job, progress: FileProgress, pipe: RagPipeline, source: FileSource,
                  files_dir: Path) -> dict[str, Any]:
-        """处理一个文件，失败只记在这个文件上，不中断整批。返回要记进清单的解析信息。"""
-        progress.status = PARSING
+        """
+        处理一个文件，失败只记在这个文件上，不中断整批。返回要记进清单的解析信息。
+        向量化失败、增强没完成的文件标记 retry，worker 稍后重试；解析失败不重试（解析器已经逐个降级过）。
+        """
+        progress.status, progress.retry, progress.seconds = PARSING, False, {}
         job.touch()
+        started = time.perf_counter()
         with capture_warnings() as notes:
             try:
                 document = source.load_file(files_dir / progress.path)
             except Exception as exc:   # load_file 自己不抛异常，这里防的是意料之外的错误
                 notes.append(str(exc))
                 document = None
+        progress.seconds["parse"] = round(time.perf_counter() - started, 3)
         if document is None:
             progress.status, progress.message = FAILED, "\n".join(notes) or "没有解析出任何内容"
             job.touch()
-            return {}
+            return {"seconds": progress.seconds}
         info = {"parser": document.metadata.get("parser", ""),
                 "pages": max((e.extra.get("page_end") or e.page or 0 for e in document.elements), default=0) or None}
 
         progress.status = EMBEDDING
         job.touch()
+        started = time.perf_counter()
         with capture_warnings() as notes, self._lock(job.kb_id):
             stats = pipe.kb.add([document])
             chunks = pipe.kb.chunks_of(document.doc_id)
+        progress.seconds["index"] = round(time.perf_counter() - started, 3)
+        info["seconds"] = progress.seconds
         parent_ids = {c.metadata.get("parent_id") for c in chunks} - {None, ""}
+        unfinished = sum(1 for c in chunks if (c.metadata.get(ENRICH_KEY) or {}).get("failed"))
         if stats["failed"]:
-            progress.status, progress.message = FAILED, "\n".join(notes) or "向量化失败"
+            progress.status, progress.retry = FAILED, True
+            progress.message = "\n".join(notes) or "向量化失败"
         else:
             progress.status = SKIPPED if stats["skipped"] else DONE
             progress.message = "内容和参数都没变，跳过向量化" if stats["skipped"] else ""
             progress.parents = sum(1 for c in chunks if c.chunk_id in parent_ids)
             progress.chunks = len(chunks) - progress.parents
+            if unfinished:
+                progress.retry = True
+                progress.message = f"{unfinished} 个片段的增强没有完成（调用大模型失败），稍后自动重试"
         job.touch()
         return info
 
@@ -453,14 +521,15 @@ class Library:
             entry.update(status=progress.status, message=progress.message, updated_at=time.time(), **info)
             if progress.status in (DONE, SKIPPED):
                 entry.update(chunks=progress.chunks, parents=progress.parents)
-            self._write_manifest(manifest)
+            self._data_changed(manifest)
 
     # ------------------------------------------------------------------ 内部
     def _pipeline(self, kb_id: str, *, reset: bool = False) -> RagPipeline:
         """打开（并缓存）知识库的管线；参数变了（重建）时重新打开。reset=True 时清空片段库。"""
-        settings = self._manifest(kb_id)["settings"]
-        key = json.dumps(settings, sort_keys=True)
+        manifest = self._manifest(kb_id)
+        key = _cache_key(manifest)
         cached = self._pipes.get(kb_id)
+        settings = manifest["settings"]
         if reset or cached is None or cached[0] != key:
             pipe = RagPipeline.from_config(self._config(kb_id, settings, reset=reset))
             persist = self._persist_dir(kb_id)
@@ -472,9 +541,22 @@ class Library:
     def _persist_dir(self, kb_id: str) -> Path:
         return self.kbs_dir / kb_id / "index"
 
-    def _lock(self, kb_id: str) -> threading.RLock:
+    def _lock(self, kb_id: str) -> "_KbLock":
         with self._guard:
-            return self._locks.setdefault(kb_id, threading.RLock())
+            if kb_id not in self._locks:
+                self._locks[kb_id] = _KbLock(self.kbs_dir / kb_id / ".lock")
+            return self._locks[kb_id]
+
+    def _data_changed(self, manifest: dict[str, Any]) -> None:
+        """
+        片段库刚被本进程写过：revision 加一写回清单，别的进程据此重新打开知识库；
+        本进程缓存的管线就是刚写入的那个，数据是新的，只更新缓存键，不用重新打开。
+        """
+        manifest["revision"] = manifest.get("revision", 0) + 1
+        self._write_manifest(manifest)
+        cached = self._pipes.get(manifest["id"])
+        if cached is not None:
+            self._pipes[manifest["id"]] = (_cache_key(manifest), cached[1])
 
     def _summary(self, manifest: dict[str, Any]) -> dict[str, Any]:
         files = manifest["files"].values()
@@ -512,15 +594,52 @@ class Library:
 
     def recover(self) -> None:
         """
-        页面服务启动时调用：上次没处理完的文件标成失败（任务只在内存里，重启后不会自动继续）。
-        不放在构造函数里：命令行评测也会打开 Library，那时页面服务可能正在建库，不能把进行中的文件改成失败。
+        页面服务启动时调用：清单里停在"处理中"、队列里却没有对应任务的文件标成失败。
+        任务都在队列里，中断的会由 worker 接着做；这里只清理升级前（任务只存在内存里时）遗留的状态。
         """
         for manifest in self._manifests():
+            if self.jobs.busy(manifest["id"]):
+                continue
             stale = [e for e in manifest["files"].values() if e.get("status") in _UNFINISHED]
             for entry in stale:
                 entry.update(status=FAILED, message="建库被中断（服务重启），点击“重建”即可续写，已写入的不会重复向量化")
             if stale:
                 self._write_manifest(manifest)
+
+
+def _cache_key(manifest: dict[str, Any]) -> str:
+    """打开的管线什么时候要重新打开：参数变了（重建），或者片段库被别的进程写过（revision 变了）。"""
+    return json.dumps([manifest["settings"], manifest.get("revision", 0)], sort_keys=True)
+
+
+class _KbLock:
+    """
+    一个知识库的读改写锁：同一进程的线程之间用 RLock，进程之间（页面服务和 worker）用文件锁。
+    可重入：同一线程嵌套加锁时只在最外层拿文件锁 —— 同一进程对同一文件再 flock 一次会把自己锁死。
+    没有 fcntl 的系统（Windows）只有线程锁，此时页面服务要用进程内的 worker（--embedded-worker）。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._file: Any = None
+
+    def __enter__(self) -> "_KbLock":
+        self._thread_lock.acquire()
+        if self._depth == 0 and fcntl is not None and self.path.parent.is_dir():
+            self._file = open(self.path, "a")
+            fcntl.flock(self._file, fcntl.LOCK_EX)
+        self._depth += 1
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._depth -= 1
+        if self._depth == 0 and self._file is not None:
+            fcntl.flock(self._file, fcntl.LOCK_UN)
+            self._file.close()
+            self._file = None
+        self._thread_lock.release()
 
 
 def _clean_name(name: str) -> str:

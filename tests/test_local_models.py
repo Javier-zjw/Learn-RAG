@@ -95,7 +95,7 @@ class TestLocalModels(unittest.TestCase):
         self.addCleanup(local_models._SHARED.clear)
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.library = Library(self.tmp)
+        self.library = Library(self.tmp, worker=True)
 
     def _create(self, name: str) -> str:
         text = "# 运维手册\n\n## 巡检\n\n" + "每日检查磁盘、内存和网络延迟，异常时上报值班负责人。" * 3 + \
@@ -165,7 +165,7 @@ class TestSparseChannel(unittest.TestCase):
         self.addCleanup(local_models._SHARED.clear)
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.library = Library(self.tmp)
+        self.library = Library(self.tmp, worker=True)
         docs = {
             "运维.md": "# 运维手册\n\n## 备份\n\n" + "数据库每晚两点全量备份，保留三十天，备份失败自动告警。" * 3,
             "财务.md": "# 报销制度\n\n## 时限\n\n" + "差旅报销需在出差结束后三十天内提交，逾期需部门负责人说明。" * 3,
@@ -202,7 +202,7 @@ class TestSparseChannel(unittest.TestCase):
     def test_sparse_index_follows_the_store(self):
         from learn_rag.server.library import Library
 
-        self.library.remove_document(self.kb, "财务.md")
+        self.library.jobs.wait(self.library.remove_document(self.kb, "财务.md").id)
         reopened = Library(self.tmp)                                          # 换一个进程：稀疏倒排从 Chroma 重建
         kb = reopened.pipeline(self.kb).kb
         self.assertEqual(len(kb.sparse_index), len([c for c in kb.chunks_of("运维.md") if "embedding_model" in c.metadata]))

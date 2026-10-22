@@ -438,6 +438,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         from .server.app import create_app
         from .server.frontend import ensure_built
         from .server.mineru_service import MinerUService
+        from .server.worker import WorkerProcess
     except ImportError as exc:
         raise SystemExit(f"启动页面服务需要 fastapi 和 uvicorn：pip install -e \".[web]\"（{exc}）") from None
     import atexit
@@ -445,18 +446,32 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
     print(f"[前端] {ensure_built()}")
     mineru = MinerUService()
-    # 正常退出时由服务的生命周期关闭 MinerU；atexit 兜底异常退出，stop 可以重复调用
+    worker = None if args.embedded_worker else WorkerProcess(args.data)
+    # 正常退出时由服务的生命周期关闭 MinerU 和 worker；atexit 兜底异常退出，stop 可以重复调用
     atexit.register(mineru.stop)
+    if worker:
+        atexit.register(worker.stop)
     # 直接关掉终端窗口时进程收到的是 SIGHUP，默认会立即退出、来不及关 MinerU；转成 SIGTERM 走正常退出流程
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, lambda *_: os.kill(os.getpid(), signal.SIGTERM))
-    app = create_app(args.data, mineru=mineru)
-    print(f"[页面服务] http://{args.host}:{args.port}　数据目录 {args.data}　按 Ctrl+C 退出（MinerU 会一并关闭）")
+    app = create_app(args.data, mineru=mineru, worker=worker)
+    print(f"[页面服务] http://{args.host}:{args.port}　数据目录 {args.data}　按 Ctrl+C 退出（MinerU、worker 会一并关闭）")
+    print(f"[worker] {'在页面服务进程内运行' if worker is None else f'单独的进程执行建库任务，日志 {worker.log_path}'}")
     if mineru.env_file.is_file():
         print("[MinerU] 后台启动中，就绪前提交的 PDF 建库任务会先等它；状态见页面“模型与环境”")
     else:
         print("[MinerU] 未找到 .mineru.env，不启动；PDF 用 PyMuPDF 解析")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+def cmd_worker(args: argparse.Namespace) -> None:
+    """
+    执行建库任务的 worker 进程（learn-rag serve 默认会启动一个）。单独运行它的场景：页面服务和 worker 分开部署、
+    或者想多开几个 worker 并行处理不同的知识库（同一个知识库同一时刻只有一个任务在执行）。
+    """
+    from .server.worker import run_worker
+
+    run_worker(args.data)
 
 
 def cmd_ls(_: argparse.Namespace) -> None:
@@ -554,7 +569,13 @@ def main() -> None:
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.add_argument("--data", default="data/web", help="知识库和上传文件的存放目录")
+    p_serve.add_argument("--embedded-worker", action="store_true",
+                         help="建库任务在页面服务进程里执行，不单独启动 worker 进程（Windows 上必须加）")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_worker = sub.add_parser("worker", help="执行建库任务的 worker 进程（learn-rag serve 默认会启动一个）")
+    p_worker.add_argument("--data", default="data/web", help="页面服务的数据目录（任务队列在 <数据目录>/jobs.db）")
+    p_worker.set_defaults(func=cmd_worker)
 
     p_ls = sub.add_parser("ls", help="列出可用组件")
     p_ls.set_defaults(func=cmd_ls)

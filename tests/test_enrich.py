@@ -234,7 +234,7 @@ class TestLibraryEnrichment(unittest.TestCase):
                   patch("learn_rag.server.library._ENRICH_CACHE", Path(self.tmp) / "cache")):   # 增强缓存写到临时目录
             p.start()
             self.addCleanup(p.stop)
-        self.library = Library(str(Path(self.tmp) / "web"))
+        self.library = Library(str(Path(self.tmp) / "web"), worker=True)
         upload_id, _ = self.library.staging.save(None, "运维手册.md", io.BytesIO(_MANUAL.encode("utf-8")))
         settings = {"chunker": {"type": "structure", "chunk_size": 60, "parent_size": 0},
                     "encoder": {"type": "hashing", "model": "hashing"}, "index": {"type": "flat"},

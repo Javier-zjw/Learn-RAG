@@ -11,6 +11,13 @@ const MINERU_STATES = {
   stopped: { label: '已停止', type: 'info' },
 } as const
 const mineru = computed(() => store.env?.mineru ?? null)
+const WORKER_STATES = {
+  running: { label: '运行中', type: 'success' },
+  restarting: { label: '重启中', type: 'warning' },
+  failed: { label: '已停止拉起', type: 'danger' },
+  stopped: { label: '已停止', type: 'info' },
+} as const
+const worker = computed(() => store.env?.worker ?? null)
 
 // MinerU 启动中时每 3 秒刷新一次，就绪后停止
 let timer: number | undefined
@@ -101,6 +108,20 @@ onMounted(reload)
           <div class="hint">
             随 <code>learn-rag serve</code> 自动启动、退出时自动关闭，读取项目根目录的 <code>.mineru.env</code>
             <template v-if="mineru.url">；服务地址 <code>{{ mineru.url }}</code></template>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="worker" class="card rise wide" style="--i: 2">
+        <div class="card-head">
+          <h3>建库 worker</h3>
+          <el-tag :type="WORKER_STATES[worker.state].type" effect="light" round>{{ WORKER_STATES[worker.state].label }}</el-tag>
+        </div>
+        <div class="card-body">
+          <div class="mineru-msg">{{ worker.message }}</div>
+          <div class="hint">
+            建库、追加、重建、删除文档都排进任务队列，由 worker 执行；页面服务重启后没做完的任务会接着做，
+            向量化失败的文件自动重试<template v-if="worker.restarts">；已自动重启 {{ worker.restarts }} 次</template>
           </div>
         </div>
       </section>

@@ -159,7 +159,7 @@ class TestEvalsetEndToEnd(unittest.TestCase):
 
         self.tmp = tempfile.mkdtemp()
         self.data = str(Path(self.tmp) / "web")
-        library = Library(self.data)
+        library = Library(self.data, worker=True)
         docs = {
             "报销制度.md": "# 报销制度\n\n## 时限\n\n" + "差旅报销需在出差结束后三十天内提交，逾期需部门负责人书面说明原因。" * 3
                          + "\n\n## 标准\n\n" + "一线城市住宿标准为每晚六百元，其他城市为每晚四百元。" * 3,

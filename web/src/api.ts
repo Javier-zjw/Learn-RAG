@@ -74,6 +74,7 @@ export interface EnvReport {
   enrich: { available: boolean; vlm: boolean; note: string; vlm_note: string }
   defaults: Settings
   mineru: { state: 'disabled' | 'starting' | 'ready' | 'failed' | 'stopped'; message: string; url: string } | null
+  worker: { state: 'running' | 'restarting' | 'failed' | 'stopped'; message: string; restarts: number }
 }
 
 export interface StagedFile {
@@ -100,7 +101,7 @@ export interface Verify {
   sampled: number
 }
 
-export type FileStatus = 'waiting' | 'parsing' | 'embedding' | 'done' | 'skipped' | 'failed'
+export type FileStatus = 'waiting' | 'parsing' | 'embedding' | 'removing' | 'done' | 'skipped' | 'failed'
 
 export interface FileProgress {
   path: string
@@ -108,12 +109,14 @@ export interface FileProgress {
   chunks: number
   parents: number
   message: string
+  retry?: boolean
+  seconds?: Record<string, number>
 }
 
 export interface Job {
   id: string
   kb_id: string
-  kind: 'build' | 'append' | 'rebuild'
+  kind: 'build' | 'append' | 'rebuild' | 'remove'
   status: 'queued' | 'running' | 'done' | 'failed'
   error: string
   notice: string
@@ -121,6 +124,8 @@ export interface Job {
   files: FileProgress[]
   counts: Record<FileStatus, number>
   processed: number
+  attempts: number
+  max_attempts: number
   created_at: number
   finished_at: number | null
   version: number
@@ -273,7 +278,7 @@ export const api = {
 
   document: (id: string, docId: string) => request<DocView>('GET', `/api/kbs/${id}/documents/${docPath(docId)}`),
   deleteDocument: (id: string, docId: string) =>
-    request<{ ok: boolean }>('DELETE', `/api/kbs/${id}/documents/${docPath(docId)}`),
+    request<Job>('DELETE', `/api/kbs/${id}/documents/${docPath(docId)}`),
   layout: (id: string, docId: string) => request<PageLayout>('GET', `/api/kbs/${id}/layout?doc=${encodeURIComponent(docId)}`),
   pageUrl: (id: string, docId: string, page: number) => `/api/kbs/${id}/page?doc=${encodeURIComponent(docId)}&n=${page}`,
   assetUrl: (id: string, asset: string) => `/api/kbs/${id}/assets/${asset.split('/').map(encodeURIComponent).join('/')}`,

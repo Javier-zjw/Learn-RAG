@@ -67,6 +67,7 @@ export const STATUS: Record<FileStatus, { label: string; type: 'info' | 'primary
   waiting: { label: '等待中', type: 'info' },
   parsing: { label: '解析中', type: 'primary' },
   embedding: { label: '向量化中', type: 'primary' },
+  removing: { label: '删除中', type: 'primary' },
   done: { label: '完成', type: 'success' },
   skipped: { label: '未变化', type: 'info' },
   failed: { label: '失败', type: 'danger' },

@@ -85,7 +85,7 @@ class TestFusionTuner(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.data = str(Path(self.tmp) / "web")
-        self.library = Library(self.data)
+        self.library = Library(self.data, worker=True)
         upload_id = None
         for name, text in _DOCS.items():
             upload_id, _ = self.library.staging.save(upload_id, name, io.BytesIO(text.encode("utf-8")))

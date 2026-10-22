@@ -17,10 +17,10 @@ watch(running, (now, before) => {
   if (before && !now && !failed.value) expanded.value = false
 })
 
-const KIND = { build: '建库', append: '追加文件', rebuild: '重建' } as const
+const KIND = { build: '建库', append: '追加文件', rebuild: '重建', remove: '删除文档' } as const
 const title = computed(() => {
   const kind = KIND[props.job.kind]
-  if (props.job.status === 'queued') return `${kind}排队中`
+  if (props.job.status === 'queued') return props.job.attempts > 0 ? `${kind}等待重试` : `${kind}排队中`
   if (running.value) return `正在${kind}`
   if (props.job.status === 'failed') return `${kind}失败`
   return failed.value ? `${kind}完成，${failed.value} 个文件失败` : `${kind}完成`
@@ -31,10 +31,15 @@ const progressStatus = computed(() => {
   return failed.value ? 'warning' : 'success'
 })
 
-// 每个文件的三步：解析 → 切分与向量化 → 完成
-const STEPS = ['解析', '切分与向量化', '入库']
+// 每个文件的三步：解析 → 切分与向量化 → 完成；删除文档只有一步
+const STEPS = computed(() => (props.job.kind === 'remove' ? ['从片段库删除'] : ['解析', '切分与向量化', '入库']))
 function stepIndex(f: FileProgress): number {
-  return { waiting: -1, parsing: 0, embedding: 1, done: 3, skipped: 3, failed: -2 }[f.status]
+  return { waiting: -1, parsing: 0, embedding: 1, removing: 0, done: 3, skipped: 3, failed: -2 }[f.status]
+}
+function duration(f: FileProgress): string {
+  const s = f.seconds ?? {}
+  const total = (s.parse ?? 0) + (s.index ?? 0)
+  return total ? ` · ${total < 10 ? total.toFixed(1) : Math.round(total)} 秒` : ''
 }
 </script>
 
@@ -47,6 +52,7 @@ function stepIndex(f: FileProgress): number {
         <el-icon v-else :class="failed ? 'warn' : 'good'"><CircleCheckFilled /></el-icon>
         <span>{{ title }}</span>
         <span class="count">{{ job.processed }} / {{ total }}</span>
+        <span v-if="job.attempts > 1" class="count">· 第 {{ job.attempts }}/{{ job.max_attempts }} 次</span>
       </div>
       <div class="job-actions">
         <el-button text size="small" @click="expanded = !expanded">
@@ -91,7 +97,7 @@ function stepIndex(f: FileProgress): number {
               </span>
             </span>
             <span class="file-result">
-              <template v-if="f.status === 'done' || f.status === 'skipped'">{{ f.chunks }} 子块 · {{ f.parents }} 父块</template>
+              <template v-if="job.kind !== 'remove' && (f.status === 'done' || f.status === 'skipped')">{{ f.chunks }} 子块 · {{ f.parents }} 父块{{ duration(f) }}</template>
             </span>
             <el-tag size="small" :type="STATUS[f.status].type" effect="light" class="tag">{{ STATUS[f.status].label }}</el-tag>
           </div>

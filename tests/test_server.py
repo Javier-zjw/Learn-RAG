@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -133,7 +134,10 @@ class TestServer(unittest.TestCase):
         table = next(c for c in view["children"] if "table" in c["kinds"])
         self.assertIn("第一章", table["section"])
 
-        self.assertEqual(self.client.delete(f"/api/kbs/{kb_id}/documents/数据/订单.csv").status_code, 200)
+        removal = self.client.delete(f"/api/kbs/{kb_id}/documents/数据/订单.csv")
+        self.assertEqual(removal.status_code, 200)
+        self.assertEqual(removal.json()["kind"], "remove")                     # 删除也交给 worker 执行
+        self.assertEqual(self.library.jobs.wait(removal.json()["id"]).status, "done")
         self.assertEqual(self.client.get(f"/api/kbs/{kb_id}/documents/数据/订单.csv").status_code, 404)
         # 换一个进程重新打开（flat 从落盘文件读），删除依然生效
         from learn_rag.server.library import Library
@@ -425,23 +429,40 @@ class TestMinerUService(unittest.TestCase):
         finally:
             shutil.rmtree(data, ignore_errors=True)
 
-    @unittest.skipUnless(_has("fastapi"), "未安装 fastapi")
     def test_build_waits_for_mineru_when_it_is_starting(self):
+        """worker 可能在另一个进程：用 HTTP 健康检查等 MinerU 服务就绪，等待期间页面能看到提示。"""
+        import http.server
+        import threading
+
         from learn_rag.server.jobs import Job
         from learn_rag.server.library import Library
 
-        service = self._service("sleep 0.5\necho MinerU 已就绪\n")
-        service.start()
+        opened = threading.Event()
+
+        class _Health(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200 if opened.is_set() else 503)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Health)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Timer(0.5, opened.set).start()                    # 0.5 秒后服务就绪
         data = tempfile.mkdtemp()
+        url = f"http://127.0.0.1:{server.server_address[1]}"
         try:
-            library = Library(data, mineru=service)
+            library = Library(data)
             job = Job(id="j", kb_id="k", kind="build", files=[])
-            library._wait_for_mineru(job, {"parsing": {"parsers": {".pdf": ["mineru", "pdf"]}}})
-            self.assertEqual(service.state, "ready")              # 返回时 MinerU 已经就绪
+            with patch("learn_rag.server.library.mineru_server_url", return_value=url), \
+                 patch("learn_rag.server.library.time.sleep", side_effect=lambda _: opened.wait(1)):
+                library._wait_for_mineru(job, {"parsing": {"parsers": {".pdf": ["mineru", "pdf"]}}}, lambda: False)
+            self.assertTrue(opened.is_set())                        # 返回时 MinerU 已经就绪
             self.assertEqual(job.notice, "")
-            self.assertGreaterEqual(job.version, 2)              # 等待期间页面能看到提示
+            self.assertGreaterEqual(job.version, 2)
         finally:
-            service.stop()
+            server.shutdown()
             shutil.rmtree(data, ignore_errors=True)
 
 

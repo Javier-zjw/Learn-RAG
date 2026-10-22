@@ -73,7 +73,7 @@ class TestChatWithKnowledgeBase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.data = str(Path(self.tmp) / "web")
-        library = Library(self.data)
+        library = Library(self.data, worker=True)
         docs = {
             "运维.md": "# 运维手册\n\n## 备份\n\n" + "数据库每晚两点全量备份，备份文件保留三十天。" * 3,
             "考勤.md": "# 考勤制度\n\n## 加班\n\n" + "节假日加班按三倍工资结算，工作日加班可以调休。" * 3,

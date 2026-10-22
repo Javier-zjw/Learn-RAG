@@ -15,14 +15,15 @@ server.app —— HTTP 接口。只做参数解析和错误码翻译，所有逻
     POST   /api/kbs/{kb_id}/files                追加暂存区里的文件
     POST   /api/kbs/{kb_id}/rebuild              按新参数重建
     GET    /api/kbs/{kb_id}/documents/{doc_id}   一篇文档的全部分块
-    DELETE /api/kbs/{kb_id}/documents/{doc_id}
+    DELETE /api/kbs/{kb_id}/documents/{doc_id}   删除文档（提交给 worker 执行，返回任务）
     GET    /api/kbs/{kb_id}/layout?doc=           原文预览：每页尺寸、每个子块在页面上的位置、未进入分块的文字
     GET    /api/kbs/{kb_id}/page?doc=&n=          第 n 页的页面图片
     GET    /api/kbs/{kb_id}/assets/{asset}       图片资产
     GET    /api/jobs/{job_id}                    任务快照
     GET    /api/jobs/{job_id}/events             任务进度（SSE，状态变化时推送快照，任务结束后关闭）
 
-构建好的前端（web/dist）存在时一并托管；传入 MinerUService 时随服务启停 MinerU。用户只需要启动这一个服务。
+构建好的前端（web/dist）存在时一并托管；传入 MinerUService 时随服务启停 MinerU，传入 WorkerProcess 时
+随服务启停 worker 进程（不传时在本进程起一个 worker 线程）。用户只需要启动这一个服务。
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from pydantic import BaseModel
 from . import environment
 from .library import Busy, Library, NotFound
 from .mineru_service import MinerUService
+from .worker import WorkerProcess
 from .recommend import profile, recommend
 
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -69,16 +71,24 @@ class Rebuild(BaseModel):
     settings: dict[str, Any] | None = None
 
 
-def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None = None) -> FastAPI:
-    """mineru 不为空时，服务启动时在后台启动 MinerU，服务退出时把它一并关闭。"""
-    library = Library(data_dir, mineru=mineru)
+def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None = None,
+               worker: WorkerProcess | None = None) -> FastAPI:
+    """
+    mineru 不为空时，服务启动时在后台启动 MinerU，服务退出时把它一并关闭。
+    worker 不为空时建库任务交给这个 worker 进程（随服务启停）；为空时在本进程里起一个 worker 线程。
+    """
+    library = Library(data_dir, worker=worker is None)
     library.recover()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if mineru:
             mineru.start()
+        if worker:
+            worker.start()
         yield
+        if worker:
+            await run_in_threadpool(worker.stop)
         if mineru:
             await run_in_threadpool(mineru.stop)
 
@@ -104,7 +114,9 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
     # ---------------------------------------------------------------- 环境
     @app.get("/api/env")
     def env() -> dict[str, Any]:
-        return {**environment.report(), "mineru": mineru.status() if mineru else None}
+        running = {"state": "running", "message": "worker 线程在页面服务进程内运行", "restarts": 0}
+        return {**environment.report(), "mineru": mineru.status() if mineru else None,
+                "worker": worker.status() if worker else running}
 
     # ---------------------------------------------------------------- 上传暂存区
     @app.post("/api/uploads")
@@ -175,8 +187,7 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
 
     @app.delete("/api/kbs/{kb_id}/documents/{doc_id:path}")
     def remove_document(kb_id: str, doc_id: str) -> dict[str, Any]:
-        library.remove_document(kb_id, doc_id)
-        return {"ok": True}
+        return library.remove_document(kb_id, doc_id).snapshot()
 
     @app.get("/api/kbs/{kb_id}/layout")
     def layout(kb_id: str, doc: str) -> dict[str, Any]:
@@ -196,7 +207,7 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
     def _job(job_id: str):
         job = library.jobs.get(job_id)
         if job is None:
-            raise NotFound(f"任务 {job_id} 不存在（服务重启后任务记录会清空）")
+            raise NotFound(f"任务 {job_id} 不存在（知识库删除后任务记录一并删除，每个知识库只保留最近的任务）")
         return job
 
     @app.get("/api/jobs/{job_id}")
@@ -205,15 +216,19 @@ def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None =
 
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str) -> StreamingResponse:
-        job = _job(job_id)
+        _job(job_id)
 
         async def stream():
+            # 任务在 worker 进程里推进，这里定时从队列读最新快照，版本号变了才推送
             version = -1
             while True:
+                job = await run_in_threadpool(library.jobs.get, job_id)
+                if job is None:
+                    return
                 if job.version != version:
                     version = job.version
                     yield f"data: {json.dumps(job.snapshot(), ensure_ascii=False)}\n\n"
-                if job.finished and version == job.version:
+                if job.finished:
                     return
                 await asyncio.sleep(0.3)
 
