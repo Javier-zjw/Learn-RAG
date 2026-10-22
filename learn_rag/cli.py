@@ -220,6 +220,27 @@ def cmd_eval(args: argparse.Namespace) -> None:
         report.save(args.out)
         Path(args.out).with_suffix(".md").write_text(report.to_markdown(), encoding="utf-8")
         print(f"\n明细已保存：{args.out}")
+    _check_baseline(args, report.summary)
+
+
+def _check_baseline(args: argparse.Namespace, summary: dict[str, float]) -> None:
+    """--save-baseline 记下当前效果；--baseline 和基线比较，有指标掉得超过容差时退出码为 1（CI 据此失败）。"""
+    from .eval.regression import compare, load_baseline, regressions, save_baseline, to_markdown
+
+    if args.save_baseline:
+        save_baseline(args.save_baseline, summary, note=f"learn-rag eval --qa {args.qa}")
+        print(f"\n基线已保存：{args.save_baseline}（提交进仓库，CI 用 --baseline 和它比较）")
+    if not args.baseline:
+        return
+    rows = compare(summary, load_baseline(args.baseline), args.tolerance)
+    print(f"\n===== 和基线比较：{args.baseline} =====")
+    print(to_markdown(rows, args.tolerance))
+    failed = regressions(rows)
+    if failed:
+        raise SystemExit(f"\n质量回归：{len(failed)} 项指标比基线低了超过 {args.tolerance:g}："
+                         + "、".join(r.metric for r in failed)
+                         + "。确认是预期的变化（比如换了更严格的评测集）后，用 --save-baseline 更新基线")
+    print("\n没有回归")
 
 
 def cmd_evalset(args: argparse.Namespace) -> None:
@@ -544,6 +565,9 @@ def main() -> None:
     p_eval.add_argument("--reuse-index", action="store_true",
                         help="复用已建好的持久化索引，跳过向量化（配合 build 子命令使用）")
     p_eval.add_argument("--out", help="评测明细输出路径 .json")
+    p_eval.add_argument("--baseline", help="和这个基线比较（--save-baseline 写的文件），有指标回归时退出码为 1")
+    p_eval.add_argument("--tolerance", type=float, default=0.02, help="允许比基线低多少（绝对值，默认 0.02）")
+    p_eval.add_argument("--save-baseline", help="把这次的汇总指标存成基线（只含质量指标，适合提交进仓库）")
     p_eval.add_argument("--kb", help="评测页面上建好的知识库（知识库 id，见 data/web/kbs/），不重新建索引")
     p_eval.add_argument("--data", default="data/web", help="页面服务的数据目录（配合 --kb）")
     p_eval.set_defaults(func=cmd_eval)
