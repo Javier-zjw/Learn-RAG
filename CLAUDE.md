@@ -109,6 +109,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
 - **一条命令启停全部**：`learn-rag serve` 负责构建前端（`server/frontend.py`）和启停 MinerU（`server/mineru_service.py`，复用 `scripts/start_mineru.sh` / `stop_mineru.sh`，不要在 Python 里重写启停逻辑）。MinerU 在后台启动，不能阻塞页面服务；退出路径（Ctrl+C、SIGTERM、关闭终端的 SIGHUP、atexit）都要能关掉它，`stop` 必须可以重复调用。
 - **原文视图**（`server/preview.py`）：页面有文字层时用文字对齐定位分块，否则用块元数据 `regions`；Office 用 `parsing/legacy.py` 的 `convert` 转 PDF。页面图片、转换出的 PDF 和定位结果按文件内容哈希缓存在 `<数据目录>/preview/`。定位规则改动后用 `samples/` 里的 PDF、Word、PPT、Excel 核对覆盖率和未覆盖的文字是否都说得清原因。
+- **本地模型**（`core/local_models.py`）：sentence-transformers 的模型一律通过 `shared_model` 加载 —— 第一次用到时才加载、进程内按模型名共享。不要在构造函数里加载：管线在建库、查看分块时也会被构建，用不到模型。精排和召回参数（`reranker`、`retrieval`）只影响查询，走 `set_retrieval` 直接生效；清单里缺这两项的老知识库由 `_with_defaults` 按升级前的行为补齐。
 - **密钥不出后端**：页面只看到“是否已配置”，地址和密钥由 encoder 从环境变量读取，不写进 `kb.json`。
 - **前端约定**：请求都走 `src/api.ts`；颜色只用 `styles.css` 里的令牌（浅色、深色各一套）；分块底色要保证正文对比度不低于 12:1；动画要尊重 `prefers-reduced-motion`；`defineModel` 在同一轮里只赋值一次（连续赋值会读到旧值、互相覆盖）。
 - 改动后跑 `python -m unittest tests.test_server`、`cd web && npm run build`（含类型检查），再用 `learn-rag serve` 在浏览器里走一遍“上传 → 推荐 → 建库 → 查看分块”。
