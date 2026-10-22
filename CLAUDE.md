@@ -19,6 +19,8 @@ learn-rag eval --dataset jsonl --qa data/sample_qa.jsonl --corpus data/sample_co
 python scripts/run_ablation.py --suite channel --dataset jsonl \
     --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
 learn-rag serve                                # 可视化建库页面：自动构建前端、随之启停本机 MinerU
+learn-rag tune --kb <id> --qa data/eval/<id>.jsonl   # 用评测集调融合参数，--apply 写回知识库
+learn-rag chat --kb <id>                       # 多轮对话（追问补全需要 .env 配置大模型）
 cd web && npm run dev                          # 前端开发服务器，/api 转发到 learn-rag serve
 ```
 
@@ -100,6 +102,10 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 
 - **过滤条件按查询传递**：`Retriever.retrieve(query, top_k, *, where=None)`。组合型检索器（混合、查询改写）必须把 `where` 原样传给每一路；新增召回通道必须实现过滤，语法与 `store/indexes.py` 的 `_match` 一致（等值或 in 列表，只能过滤标量字段）。
 - **BM25 切词**：建索引用 `_terms`（通用切词 + 整体编号 + 编号碎片），查询用 `_query_terms`（有完整编号时以编号整体代替碎片）。改 BM25 切词不影响向量，已有索引打开时自动按新规则重建；不要改 `index_tokens`，它同时决定 Hashing 向量，改了必须重建索引。
+- **稀疏通道**：只有 `supports_sparse` 的 encoder（`bge_m3`）能开。稀疏向量由 `KnowledgeBase` 写入子块元数据 `sparse`（`SPARSE_KEY`），稀疏倒排和 BM25 一样在 `_sync` 里从片段库重建，不单独落盘；新增能产出稀疏向量的 encoder 时实现 `encode_sparse`，并让 `signature()` 体现这一点。
+- **RRF 只有一份**：混合召回和调参工具都用 `retrievers.py` 的 `rrf_fuse` 与 `fetch_size`，改融合公式只改这里，否则 `learn-rag tune` 模拟出的排序和线上对不上（`tests/test_tuning.py` 会失败）。
+- **精排器的 `pointwise`**：分数只取决于（问题, 片段正文）时设为 True，调参时每题只打一次分；分数掺了召回分（词重叠）或逐批打分（大模型）的保持 False。
+- **多轮问题补全**（`condense.py`）：`answer` / `retrieve_only` 带 `history` 时先补全再检索和生成，只在 `pipeline.condense: true` 且有真实大模型时启用（`echo` 补不了）；补全失败一律退回原问题。
 
 ## 可视化建库（`learn_rag/server/`、`web/`）
 
@@ -120,6 +126,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **缺什么跳什么**：指标用 `needs_gold_docs`、`needs_gold_answer`、`needs_evidence`、`needs_generation` 声明依赖，缺标注或只评检索时由 runner 跳过，绝不记 0 分。新增指标时声明清楚。
 - **出题要过检查**（`eval/synth.py`）：证据必须出现在原文里、问题不能依赖"本文/上文"等指代、去重；丢弃的原因要计数输出，不能悄悄丢掉。
 - 页面上建的知识库用 `learn-rag evalset --kb <id>` 出题、`learn-rag eval --kb <id> --retrieval-only` 评测；改检索、切分、模型后用同一份评测集对比 `evidence_*` 指标。
+- **调参**（`eval/tuning.py`）：`learn-rag tune --kb <id> --qa <评测集>` 网格搜索融合权重、RRF 常数和候选数，`--transforms` 比较查询改写，`--apply` 写回知识库。召回结果和逐点精排分数按题缓存，模拟的"召回 → 融合 → 精排 → 展开"必须和 `RagPipeline._contexts` 一步步对应；改管线的这几步时同步改 `FusionTuner._simulate`。
 
 ## 代码风格
 
