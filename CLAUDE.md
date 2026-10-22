@@ -20,7 +20,10 @@ python scripts/run_ablation.py --suite channel --dataset jsonl \
     --qa data/sample_qa.jsonl --corpus data/sample_corpus.jsonl
 learn-rag serve                                # 可视化建库页面：自动构建前端、随之启停本机 MinerU
 learn-rag tune --kb <id> --qa data/eval/<id>.jsonl   # 用评测集调融合参数，--apply 写回知识库
-learn-rag chat --kb <id>                       # 多轮对话（追问补全需要 .env 配置大模型）
+learn-rag chat --kb <id>                       # 多轮对话（追问补全需要 .env 配置大模型），每次问答记 trace
+learn-rag stats --kb <id>                      # 运行监控：查询 P50 / P95、疑似空召回率、建库耗时
+learn-rag worker                               # 建库 worker 进程（serve 默认会启动一个）
+learn-rag eval ... --baseline tests/baselines/sample_eval.json   # 质量回归，有指标掉了超过容差时退出码 1
 cd web && npm run dev                          # 前端开发服务器，/api 转发到 learn-rag serve
 ```
 
@@ -119,6 +122,10 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 
 - **后端只编排、不重写建库逻辑**：解析走 `FileSource.load_file`，写入、增量、模型检查、核对都走 `KnowledgeBase`。`app.py` 只做参数解析和错误码翻译（`NotFound` → 404、`ValueError` → 400、`Busy` → 409），逻辑都放在 `Library`。
 - **一个知识库一个目录，参数固定**：改参数走 `rebuild`，只有换 embedding 模型或向量库参数时才清空片段库。知识库 id 随机生成，不复用目录。
+- **任务队列与 worker**（`server/jobs.py`、`server/worker.py`）：写知识库的操作（建库、追加、重建、删除文档）一律 `jobs.submit` 提交成任务，由 worker 调 `Library.run_job` 执行，页面服务进程不写片段库 —— 本地 Chroma 另一个进程写入的向量不会出现在本进程已打开的 HNSW 索引里。`Library` 默认不起 worker（命令行评测、调参打开它只为读，不能顺手执行队列里的任务），测试和单进程场景传 `worker=True`。
+- **跨进程一致**：`kb.json` 的读改写都在 `_lock(kb_id)` 里（线程锁 + `fcntl` 文件锁，可重入）；片段库被写过后调 `_data_changed` 让 `revision` 加一，读的一方按"参数 + revision"缓存管线，变了就重新打开。不要绕过 `_data_changed` 直接写清单里的文件状态。
+- **重试与中断**：文件级失败用 `FileProgress.retry` 标记能否重试（向量化失败、增强没完成可以，解析失败不行）；`run_job` 只处理状态为 `waiting` 的文件，所以重试和中断续做天然只做剩下的；在文件之间检查 `should_stop`，停止时抛 `Interrupted`。`ValueError` / `LookupError` 视为永久错误，不重试。
+- **问答走 `Library.ask`**：线上问答（chat、以后的提问页）统一走它，记 trace（`pipeline/trace.py`）；评测、调参直接用 `pipeline()`，不记。页面服务进程里做向量检索前，要先解决上面说的 Chroma 跨进程缓存问题（第 7 阶段的提问页）。
 - **建库增强**（`enrich`）属于建库参数，改了走 `rebuild`（不清空片段库，靠指纹逐篇重写）；结果缓存在项目的 `.cache/enrich`，各知识库共用；视觉模型的地址和密钥只在 `_config` 运行时从环境变量读取。
 - **页面参数 → 配置的翻译只在一处**：`Library.validate` 和 `Library._config`。新增一个页面参数时同时改 `validate`、`environment.default_settings` 和前端 `SettingsForm.vue`。
 - **推荐规则**在 `recommend.py`，每条推荐都要附一句理由；只从 `environment` 报告可用的选项里选，不可用的选项在前端置灰并说明原因。
@@ -135,6 +142,7 @@ cd web && npm run dev                          # 前端开发服务器，/api �
 - **缺什么跳什么**：指标用 `needs_gold_docs`、`needs_gold_answer`、`needs_evidence`、`needs_generation` 声明依赖，缺标注或只评检索时由 runner 跳过，绝不记 0 分。新增指标时声明清楚。
 - **出题要过检查**（`eval/synth.py`）：证据必须出现在原文里、问题不能依赖"本文/上文"等指代、去重；丢弃的原因要计数输出，不能悄悄丢掉。
 - 页面上建的知识库用 `learn-rag evalset --kb <id>` 出题、`learn-rag eval --kb <id> --retrieval-only` 评测；改检索、切分、模型后用同一份评测集对比 `evidence_*` 指标。
+- **质量回归**（`eval/regression.py`）：`--save-baseline` 只存质量指标（不含 latency），`--baseline` 比较时只看两边都有的指标、绝对容差。改了切分、检索、评测逻辑导致 `tests/baselines/sample_eval.json` 回归时，确认是预期的才用 `--save-baseline` 更新并说明原因；CI（`.github/workflows/ci.yml`）在每次推送时跑测试、示例评测回归和前端构建。
 - **调参**（`eval/tuning.py`）：`learn-rag tune --kb <id> --qa <评测集>` 网格搜索融合权重、RRF 常数和候选数，`--transforms` 比较查询改写，`--apply` 写回知识库。召回结果和逐点精排分数按题缓存，模拟的"召回 → 融合 → 精排 → 展开"必须和 `RagPipeline._contexts` 一步步对应；改管线的这几步时同步改 `FusionTuner._simulate`。
 
 ## 代码风格
