@@ -331,6 +331,34 @@ def cmd_tune(args: argparse.Namespace) -> None:
         print("\n加 --apply 把最好的一组写回知识库")
 
 
+def cmd_chat(args: argparse.Namespace) -> None:
+    """
+    和页面上建好的知识库多轮对话。配置了大模型时，追问会结合前几轮补全成完整问题再检索，回答也由大模型生成；
+    没配置时每句话单独检索，用抽取式回答。
+    """
+    library, info = _open_kb(args)
+    pipe = library.pipeline(args.kb)
+    print(f"[知识库] {info['name']}（{args.kb}）：输入问题开始对话，空行或 exit 退出")
+    if pipe.condenser is None:
+        print("  提示：未配置大模型（.env 中的 LLM_BASE_URL / LLM_API_KEY），追问不会结合上文补全")
+    history: list[dict[str, str]] = []
+    while True:
+        try:
+            question = input("\n问> ").strip()
+        except EOFError:
+            break
+        if question in ("", "exit", "quit"):
+            break
+        result = pipe.answer(question, history=history)
+        if "standalone_question" in result.extras:
+            print(f"（补全为：{result.extras['standalone_question']}）")
+        print(f"答> {result.answer.text}")
+        for i, ctx in enumerate(result.contexts, 1):
+            title = ctx.chunk.metadata.get("title", ctx.doc_id)
+            print(f"  [{i}] {title}：{' '.join(ctx.text.split())[:60]}…")
+        history += [{"role": "user", "content": question}, {"role": "assistant", "content": result.answer.text}]
+
+
 def cmd_build(args: argparse.Namespace) -> None:
     """离线建库：把语料向量化并持久化，之后 ask/eval 不再重复编码。
 
@@ -497,6 +525,11 @@ def main() -> None:
     p_tune.add_argument("--out", help="全部结果保存为 json")
     p_tune.add_argument("--config", action="append", default=None, help="额外的配置文件（覆盖 llm 等）")
     p_tune.set_defaults(func=cmd_tune)
+
+    p_chat = sub.add_parser("chat", help="和页面上建好的知识库多轮对话（追问会结合上文补全再检索）")
+    p_chat.add_argument("--kb", required=True, help="知识库 id（见 data/web/kbs/）")
+    p_chat.add_argument("--data", default="data/web", help="页面服务的数据目录")
+    p_chat.set_defaults(func=cmd_chat)
 
     p_build = sub.add_parser("build", help="离线建库并持久化（只需跑一次）")
     p_build.add_argument("--config", action="append", default=None)

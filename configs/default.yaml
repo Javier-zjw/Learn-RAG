@@ -41,3 +41,4 @@ generator:
 pipeline:
   top_k: 5 # 最终进 prompt 的片段数
   candidate_k: 20 # 召回候选数（给精排留排序空间）
+  condense: false # 多轮对话时用大模型把追问补全成完整问题再检索（需要真实的 llm，echo 补不了）

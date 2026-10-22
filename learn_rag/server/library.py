@@ -365,8 +365,11 @@ class Library:
                    pipeline={**(cfg.get("pipeline") or {}), "candidate_k": retrieval["candidate_k"],
                              "top_k": retrieval["top_k"]})
         if environment.has_llm():
-            # 查询改写、多轮对话问题补全要用大模型；地址和密钥由 LLM 客户端从环境变量读取
+            # 有大模型时：回答由大模型生成，多轮对话的追问先补全再检索，查询改写也可以开。
+            # 地址和密钥由 LLM 客户端从环境变量读取，不写进 kb.json
             cfg["llm"] = load_config(_PROJECT_ROOT / "configs" / "models_env.yaml")["llm"]
+            cfg["generator"] = {"type": "stuff"}
+            cfg["pipeline"]["condense"] = True
         return cfg
 
     # ------------------------------------------------------------------ 建库任务

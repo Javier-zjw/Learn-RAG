@@ -7,7 +7,7 @@ pipeline.rag —— 端到端 RAG 管线（系统级门面）。
 背后是完整的六段式流程：
 
     切分 → 向量化 → 索引 ──(离线)
-    改写 → 召回 → 精排 → 父块展开 → 装配 → 生成 ──(在线)
+    （多轮对话时先补全问题）→ 改写 → 召回 → 精排 → 父块展开 → 装配 → 生成 ──(在线)
 
 这是"深类"的终极形态：接口两个方法，内部承载全部复杂度。
 同时它**不自己实现任何算法**，只负责编排 —— 每一步都是可替换的组件。
@@ -24,6 +24,7 @@ from typing import Any
 from ..core.interfaces import LLM, Generator, Reranker, Retriever, TextEncoder
 from ..core.registry import registry
 from ..core.types import Answer, Document, RagResult, ScoredChunk, Timer
+from ..retrieval.condense import QuestionCondenser
 from ..store.knowledge_base import KnowledgeBase
 
 # 触发各实现模块的注册（import 副作用）。集中在这里，使用者只 import 本模块即可。
@@ -38,7 +39,8 @@ class RagPipeline:
             generator: Generator,
             reranker: Reranker | None = None,
             top_k: int = 5,
-            candidate_k: int = 20
+            candidate_k: int = 20,
+            condenser: QuestionCondenser | None = None
     ) -> None:
         self.kb = kb
         self.retriever = retriever
@@ -46,33 +48,52 @@ class RagPipeline:
         self.reranker = reranker
         self.top_k = top_k
         self.candidate_k = candidate_k
+        self.condenser = condenser
 
     def index(self, documents: Iterable[Document], *, progress: bool = False) -> dict[str, int]:
         return self.kb.add(documents, progress=progress)
 
-    def answer(self, question: str, *, top_k: int | None = None, where: dict[str, Any] | None = None) -> RagResult:
+    def answer(self, question: str, *, top_k: int | None = None, where: dict[str, Any] | None = None,
+               history: Sequence[dict[str, str]] | None = None) -> RagResult:
         """
         一次问答。返回值带齐了答案、证据、各阶段耗时 —— 评测与排障都靠它
         where 是元数据过滤条件（如 {"file_type": "pdf"}），作用于每一路召回
+        history 是之前几轮的对话（OpenAI 格式的消息列表）：有大模型时先把追问补全成完整问题再检索和生成，
+        补全后的问题记在 extras["standalone_question"]
         """
         timings: dict[str, float] = {}
-        contexts = self._contexts(question, top_k or self.top_k, timings, where)
+        extras: dict[str, Any] = {}
+        query = self._standalone(question, history, timings, extras)
+        contexts = self._contexts(query, top_k or self.top_k, timings, where)
 
         with Timer(timings, "generate"):
-            answer = self.generator.generate(question, contexts)
+            answer = self.generator.generate(query, contexts)
 
         timings["total"] = sum(timings.values())
-        return RagResult(question=question, answer=answer, contexts=contexts, timings=timings)
+        return RagResult(question=question, answer=answer, contexts=contexts, timings=timings, extras=extras)
 
-    def retrieve_only(self, question: str, *, top_k: int | None = None,
-                      where: dict[str, Any] | None = None) -> RagResult:
+    def retrieve_only(self, question: str, *, top_k: int | None = None, where: dict[str, Any] | None = None,
+                      history: Sequence[dict[str, str]] | None = None) -> RagResult:
         """
         只跑检索，不调生成 —— 调检索参数时用它，能省掉 90% 的时间和费用
         """
         timings: dict[str, float] = {}
-        contexts = self._contexts(question, top_k or self.top_k, timings, where)
+        extras: dict[str, Any] = {}
+        query = self._standalone(question, history, timings, extras)
+        contexts = self._contexts(query, top_k or self.top_k, timings, where)
         timings["total"] = sum(timings.values())
-        return RagResult(question=question, answer=Answer(text=""), contexts=contexts, timings=timings)
+        return RagResult(question=question, answer=Answer(text=""), contexts=contexts, timings=timings, extras=extras)
+
+    def _standalone(self, question: str, history: Sequence[dict[str, str]] | None, timings: dict[str, float],
+                    extras: dict[str, Any]) -> str:
+        """多轮对话时把追问补全成完整问题；没有历史或没有大模型时原样返回（没有大模型就补不了，不报错）。"""
+        if not history or self.condenser is None:
+            return question
+        with Timer(timings, "condense"):
+            query = self.condenser.condense(question, history)
+        if query != question:
+            extras["standalone_question"] = query
+        return query
 
     def _contexts(self, question: str, top_k: int, timings: dict[str, float],
                   where: dict[str, Any] | None = None) -> list[ScoredChunk]:
@@ -114,6 +135,7 @@ class RagPipeline:
             reranker=reranker,
             top_k=pcfg.get("top_k", 5),
             candidate_k=pcfg.get("candidate_k", 20),
+            condenser=QuestionCondenser(llm) if llm is not None and pcfg.get("condense") else None,
         )
 
 def _build_retriever(spec: dict[str, Any], *, kb: KnowledgeBase, llm: LLM | None) -> Retriever:
