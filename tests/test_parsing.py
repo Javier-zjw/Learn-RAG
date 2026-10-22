@@ -292,6 +292,12 @@ class TestVlmOcr(unittest.TestCase):
 
 
 class TestExternalAdapters(unittest.TestCase):
+    def setUp(self) -> None:
+        # MinerU 解析前会检查 VLM 服务是否可用；这里的测试用假的 mineru-kit，把服务当作可用
+        ready = patch("learn_rag.parsing.external.mineru_ready", return_value=True)
+        ready.start()
+        self.addCleanup(ready.stop)
+
     MIDDLE = {
         "schema": "docvortex.middle",
         "pages": [
@@ -379,6 +385,17 @@ class TestExternalAdapters(unittest.TestCase):
         self.assertIn("zip", cmd)
         self.assertIn("standard", cmd)
         self.assertEqual(len(elements), 10)
+
+    def test_mineru_fails_fast_when_service_is_down(self):
+        """VLM 服务不可用时立刻失败（交给备选解析器），不调用 mineru-kit 等到超时；Office 文件走 flash 档，不受影响。"""
+        with patch("learn_rag.parsing.external.mineru_ready", return_value=False), \
+             patch("learn_rag.parsing.external.subprocess.run", side_effect=AssertionError("不应调用 MinerU")):
+            with self.assertRaisesRegex(RuntimeError, "VLM 服务不可用"):
+                MinerUParser().parse(Path("a.pdf"))
+        with patch("learn_rag.parsing.external.mineru_ready", return_value=False), \
+             patch("learn_rag.parsing.external.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(RuntimeError, "找不到 MinerU"):
+                MinerUParser().parse(Path("a.docx"))
 
     def test_mineru_reads_env_file(self):
         """.mineru.env 与启动脚本共用：文件里的值优先于 shell 环境变量和解析器默认值。"""
@@ -883,6 +900,12 @@ class TestEnterpriseRoutes(unittest.TestCase):
 
 class TestAssetStorage(unittest.TestCase):
     """图片资产：内容寻址去重、MinerU/Docling 提取、路径进入 chunk 元数据。"""
+
+    def setUp(self) -> None:
+        # MinerU 解析前会检查 VLM 服务是否可用；这里的测试用假的 mineru-kit，把服务当作可用
+        ready = patch("learn_rag.parsing.external.mineru_ready", return_value=True)
+        ready.start()
+        self.addCleanup(ready.stop)
 
     def test_save_asset_dedupes(self):
         from learn_rag.parsing.assets import save_asset

@@ -19,6 +19,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from zipfile import ZipFile
 from typing import Any
@@ -34,6 +36,8 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # MinerU 4.x 中可以选择质量档位（flash/basic/standard/advanced）的输入格式
+# 要用 VLM 服务的档位
+_VLM_TIERS = {"standard", "advanced"}
 _TIERED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".jp2"}
 # .mineru.env 没写 MINERU_PYTHON_ENV 时的默认环境，和 scripts/start_mineru.sh 保持一致
 _DEFAULT_MINERU_PYTHON_ENV = "/opt/anaconda3/envs/langchain_env"
@@ -45,6 +49,33 @@ def read_mineru_env(env_file: str | None = ".mineru.env") -> dict[str, str]:
         return {}
     path = Path(env_file) if Path(env_file).is_absolute() else _PROJECT_ROOT / env_file
     return _read_env_file(path) if path.is_file() else {}
+
+
+def mineru_server_url(env_file: str | None = ".mineru.env") -> str:
+    """本机 MinerU VLM 服务的地址（.mineru.env 的 MINERU_MODEL_VLM_SERVER_URL），没配置时返回空串。"""
+    return read_mineru_env(env_file).get("MINERU_MODEL_VLM_SERVER_URL", "").rstrip("/")
+
+
+_HEALTH: dict[str, tuple[float, bool]] = {}     # 地址 -> (检查时间, 是否可用)
+
+
+def mineru_ready(url: str, *, timeout: float = 3.0, cache: float = 10.0) -> bool:
+    """
+    MinerU VLM 服务是否可用：请求 /v1/models（和 start_mineru.sh 的健康检查相同）。
+    结果缓存 cache 秒：一批 PDF 逐个解析时不必每个都探测一次；cache=0 时总是重新探测。
+    """
+    if not url:
+        return False
+    checked = _HEALTH.get(url)
+    if cache and checked and time.time() - checked[0] < cache:
+        return checked[1]
+    try:
+        with urllib.request.urlopen(f"{url}/v1/models", timeout=timeout) as resp:
+            ok = resp.status == 200
+    except OSError:
+        ok = False
+    _HEALTH[url] = (time.time(), ok)
+    return ok
 
 
 def find_mineru_command(command: str = "mineru-kit", env: dict[str, str] | None = None) -> str | None:
@@ -65,6 +96,10 @@ class MinerUParser(DocumentParser):
     """
     MinerU 4.x 适配器。standard 档位适合复杂版面、表格、公式和扫描件；
     CPU 部署通过独立 VLM 服务隔离模型加载，避免每次导入都在进程内复制大模型。
+
+    VLM 服务是独立的长期服务（scripts/start_mineru.sh 启动，learn-rag serve 会代为启停）：
+    用到它的档位（standard / advanced）解析前先做健康检查，服务不可用时立刻失败，交给备选解析器，
+    而不是让 mineru-kit 连不上服务一直等到超时（默认 30 分钟）。
     """
 
     def __init__(
@@ -140,6 +175,10 @@ class MinerUParser(DocumentParser):
         recorded = self.replay_dir / f"{path.name}.zip" if self.replay_dir else None
         if recorded is not None and recorded.is_file():
             return self._read_result(recorded)
+        server = self.env.get("MINERU_MODEL_VLM_SERVER_URL", "").rstrip("/")
+        if path.suffix.lower() in _TIERED_SUFFIXES and self.tier in _VLM_TIERS and not mineru_ready(server):
+            raise RuntimeError(f"MinerU VLM 服务不可用（{server or '未配置地址'}）：先运行 bash scripts/start_mineru.sh，"
+                               "或用 learn-rag serve 自动启动")
         with tempfile.TemporaryDirectory() as out:
             zip_path = Path(out) / f"{path.stem}.zip"
             cmd = [self.command, "parse", str(path), "-o", str(zip_path), "--format", "zip"]
