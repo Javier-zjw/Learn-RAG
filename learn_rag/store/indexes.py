@@ -215,7 +215,7 @@ class BM25Index:
         self.remove([c.chunk_id for c in chunks])
         for chunk in chunks:
             slot = len(self._chunks)
-            tokens = _terms(chunk.text)
+            tokens = _terms(chunk.index_text)
             freq: dict[str, int] = defaultdict(int)
             for tok in tokens:
                 freq[tok] += 1

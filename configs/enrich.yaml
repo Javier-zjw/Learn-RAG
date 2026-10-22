@@ -1,0 +1,19 @@
+# 建库增强（工业级改进路线第 4 阶段）：每个子块调用一次大模型，写一句"这一块在全文里的背景"、
+# 概括表格、生成假设问题；开了 summaries 时每个父块再写一段摘要；配置了 vlm 时用视觉模型描述图片。
+# 需要真实的大模型，和 models_env.yaml 一起叠加：
+#   learn-rag build --config configs/parsing.yaml --config configs/chroma.yaml \
+#       --config configs/models_env.yaml --config configs/enrich.yaml --docs <目录>
+# 增强参数进入文档指纹：改了这里，下次 build 时相关文档会重新写入（增强结果有缓存，不会重复调用大模型）。
+enrich:
+  context: true          # 一句话背景，拼在正文前面进向量、BM25 和稀疏索引
+  describe: true         # 概括表格；配置了 vlm 时再描述图片和图表
+  questions: 0           # 每个子块生成几个假设问题（各自一个向量），0 表示不生成
+  summaries: false       # 每个父块写一段摘要（一个向量）
+  workers: 4             # 并发调用数
+  cache_dir: .cache/enrich
+  assets_dirs: [.cache/assets]
+  # vlm:                 # 描述图片用的视觉模型（OpenAI 兼容的多模态接口）
+  #   type: openai_compat
+  #   model: ${OCR_MODEL:-qwen-vl-max}
+  #   base_url: ${OCR_BASE_URL}
+  #   api_key: ${OCR_API_KEY}

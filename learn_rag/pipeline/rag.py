@@ -21,9 +21,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from ..core.interfaces import LLM, Generator, Reranker, Retriever, TextEncoder
+from ..core.interfaces import LLM, ChunkEnricher, Generator, Reranker, Retriever, TextEncoder
 from ..core.registry import registry
 from ..core.types import Answer, Document, RagResult, ScoredChunk, Timer
+from ..generation.llms import EchoLLM
 from ..retrieval.condense import QuestionCondenser
 from ..store.knowledge_base import KnowledgeBase
 
@@ -120,9 +121,10 @@ class RagPipeline:
             encoder = registry.build("encoder", {"type": "cached", **cfg["encoder_cache"]}, inner=encoder)
         chunker = registry.build("chunker", cfg["chunker"])
         vector_index = registry.build("index", cfg.get("index") or {"type": "flat"})
-        kb = KnowledgeBase(encoder=encoder, chunker=chunker, vector_index=vector_index)
-
         llm: LLM | None = registry.build("llm", cfg["llm"]) if cfg.get("llm") else None
+        kb = KnowledgeBase(encoder=encoder, chunker=chunker, vector_index=vector_index,
+                           enricher=_build_enricher(cfg.get("enrich"), llm))
+
         retriever = _build_retriever(cfg["retriever"], kb=kb, llm=llm)
         reranker = registry.build("reranker", cfg.get("reranker") or {"type": "identity"}, llm=llm)
         generator = registry.build("generator", cfg["generator"], llm=llm)
@@ -137,6 +139,23 @@ class RagPipeline:
             candidate_k=pcfg.get("candidate_k", 20),
             condenser=QuestionCondenser(llm) if llm is not None and pcfg.get("condense") else None,
         )
+
+def _build_enricher(spec: dict[str, Any] | None, llm: LLM | None) -> ChunkEnricher | None:
+    """
+    建库增强（ingest/enrich.py）。enrich 段不写或为空时不增强。
+    增强要真实的大模型：llm 是 echo（默认配置）时直接报错，否则会把占位输出当成增强写进索引。
+    图片描述用 enrich.vlm 配置的视觉模型，不配置时不描述图片。
+    """
+    if not spec:
+        return None
+    spec = dict(spec)
+    if llm is None or isinstance(llm, EchoLLM):
+        raise ValueError("建库增强（enrich）需要真实的大模型：在 .env 配置 LLM_BASE_URL、LLM_API_KEY，"
+                         "并叠加 configs/models_env.yaml；或者去掉配置里的 enrich 段")
+    vlm_spec = spec.pop("vlm", None)
+    vlm = registry.build("llm", vlm_spec) if vlm_spec else None
+    return registry.build("enricher", {"type": "llm", **spec}, llm=llm, vlm=vlm)
+
 
 def _build_retriever(spec: dict[str, Any], *, kb: KnowledgeBase, llm: LLM | None) -> Retriever:
     """

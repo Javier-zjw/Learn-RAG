@@ -64,6 +64,21 @@ class Chunker(ABC):
     @abstractmethod
     def split(self, document: Document) -> list[Chunk]: ...
 
+class ChunkEnricher(ABC):
+    """
+    建库时的增强：切分之后、向量化之前，给片段补上帮助检索的文本（写进元数据的 ENRICH_KEY，见 Chunk.index_text）。
+
+    接口只有一个方法，调用大模型、并发、缓存、失败重试都藏在实现里。
+    signature() 要包含所有会改变增强结果的参数：它进入文档指纹，改了参数，建库时这些文档会重新写入。
+    """
+
+    @abstractmethod
+    def enrich(self, document: Document, chunks: list[Chunk]) -> None: ...
+
+    @abstractmethod
+    def signature(self) -> str: ...
+
+
 class TextEncoder(ABC):
     """
     文本向量化

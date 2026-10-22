@@ -13,6 +13,9 @@ store.knowledge_base —— 知识库（离线链路的门面 / Facade）。
 1. 片段库（VectorIndex，如 Chroma）是唯一的数据来源：子块的向量、正文、元数据和父块都存在里面。
    BM25 倒排、稀疏倒排（encoder 能产出稀疏向量时，稀疏向量存在子块元数据 sparse 里）、父块表和文档清单
    是派生数据，打开时从片段库重建，不会和它对不上。
+   建库时可选的增强（enricher）把背景、图表描述写进片段元数据，索引用 Chunk.index_text；
+   假设问题、章节摘要各自生成一条"视图"记录（view_of 指向所属片段，正文和所属片段相同、向量来自问题或摘要），
+   只进向量索引，命中后由 expand 换回所属片段。
 2. 子块和父块：父块由切分器决定（被子块的 parent_id 引用的块），写入时不生成向量、只存储；
    子块带向量，并在元数据里记下 embedding 模型（embedding_model），重建派生数据时据此区分两者。
 3. 增量更新：每个片段记下所属文档的指纹（正文、元数据、切分参数、模型的哈希）和该文档的片段总数。
@@ -32,8 +35,8 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 
-from ..core.interfaces import Chunker, TextEncoder, VectorIndex
-from ..core.types import Chunk, Document, ScoredChunk
+from ..core.interfaces import ChunkEnricher, Chunker, TextEncoder, VectorIndex
+from ..core.types import ENRICH_KEY, Chunk, Document, ScoredChunk
 from .indexes import SPARSE_KEY, BM25Index, FlatVectorIndex, SparseIndex
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,20 @@ logger = logging.getLogger(__name__)
 # 知识库写进片段元数据的字段
 _FINGERPRINT = "doc_fingerprint"   # 所属文档的指纹
 _DOC_CHUNKS = "doc_chunks"         # 所属文档的片段总数（子块 + 父块），用来发现写了一半的文档
-_MODEL = "embedding_model"         # 生成向量的模型，只有子块有
+_MODEL = "embedding_model"         # 生成向量的模型，只有子块和视图有
+_VIEW_OF = "view_of"               # 视图记录所属片段的 id
+_VIEW_TEXT = "view_text"           # 视图的文本（假设问题、章节摘要），向量由它生成
+# 视图不复制的元数据：增强内容和稀疏向量属于所属片段，版面位置和图片由所属片段展示
+_VIEW_SKIP = {ENRICH_KEY, SPARSE_KEY, "parent_id", "regions", "assets"}
+
+
+def _is_view(chunk: Chunk) -> bool:
+    return _VIEW_OF in chunk.metadata
+
+
+def _embed_text(chunk: Chunk) -> str:
+    """生成向量用的文本：视图用问题或摘要本身，片段用正文加增强文本。"""
+    return chunk.metadata[_VIEW_TEXT] if _is_view(chunk) else chunk.index_text
 
 
 class KnowledgeBase:
@@ -51,10 +67,12 @@ class KnowledgeBase:
             chunker: Chunker,
             vector_index: VectorIndex | None = None,
             bm25_index: BM25Index | None = None,
-            batch_size: int = 64
+            batch_size: int = 64,
+            enricher: ChunkEnricher | None = None
     ) -> None:
         self.encoder = encoder
         self.chunker = chunker
+        self.enricher = enricher
         self.vector_index = vector_index if vector_index is not None else FlatVectorIndex()
         self._bm25 = bm25_index if bm25_index is not None else BM25Index()
         self._sparse = SparseIndex()           # encoder 支持稀疏向量（BGE-M3）时才有内容
@@ -113,23 +131,29 @@ class KnowledgeBase:
         return stats
 
     def _prepare(self, doc: Document, fingerprint: str) -> list[Chunk]:
-        """切分并给每个片段打上文档指纹、片段总数；子块再记下 embedding 模型。"""
+        """切分、增强、生成视图，给每条记录打上文档指纹、记录总数；要生成向量的（子块和视图）再记下 embedding 模型。"""
         chunks = self.chunker.split(doc)
+        if self.enricher is not None:
+            self.enricher.enrich(doc, chunks)
         parent_ids = {c.metadata["parent_id"] for c in chunks if c.metadata.get("parent_id")}
         model = self.encoder.signature()
         for chunk in chunks:
-            chunk.metadata[_FINGERPRINT] = fingerprint
-            chunk.metadata[_DOC_CHUNKS] = len(chunks)
             if chunk.chunk_id not in parent_ids:
                 chunk.metadata[_MODEL] = model
-        return chunks
+        records = chunks + [view for chunk in chunks for view in _views(chunk, model)]
+        for record in records:
+            record.metadata[_FINGERPRINT] = fingerprint
+            record.metadata[_DOC_CHUNKS] = len(records)
+        return records
 
     def _flush(self, pending: list[tuple[str, list[Chunk]]], stats: dict[str, int]) -> None:
         children = [c for _, chunks in pending for c in chunks if _MODEL in c.metadata]
         try:
-            vectors = self.encoder.encode([c.text for c in children], is_query=False)
-            # 稀疏向量和稠密向量来自同一个模型（BGE-M3 一次前向同时算出），写进子块元数据，随片段一起存
-            sparse = self.encoder.encode_sparse([c.text for c in children]) if self.encoder.supports_sparse else None
+            vectors = self.encoder.encode([_embed_text(c) for c in children], is_query=False)
+            # 稀疏向量和稠密向量来自同一个模型（BGE-M3 一次前向同时算出），写进子块元数据，随片段一起存。
+            # 稀疏召回只看子块本身，视图不需要
+            sparse = self.encoder.encode_sparse([_embed_text(c) for c in children]) \
+                if self.encoder.supports_sparse else None
         except Exception as exc:
             doc_ids = [doc_id for doc_id, _ in pending]
             logger.error("embedding 失败，跳过 %d 篇文档 %s：%s", len(doc_ids), doc_ids[:5], exc)
@@ -146,7 +170,8 @@ class KnowledgeBase:
                 stats["failed"] += len(pending)
                 return
             for chunk, weights in zip(children, sparse):
-                chunk.metadata[SPARSE_KEY] = weights
+                if not _is_view(chunk):
+                    chunk.metadata[SPARSE_KEY] = weights
         by_id = {c.chunk_id: v for c, v in zip(children, vectors)}
         for doc_id, chunks in pending:
             try:
@@ -155,24 +180,27 @@ class KnowledgeBase:
                 logger.error("写入文档 %s 失败，已入库的旧版本保持不变：%s", doc_id, exc)
                 stats["failed"] += 1
                 continue
-            children_count = sum(1 for c in chunks if _MODEL in c.metadata)
             stats["documents"] += 1
-            stats["chunks"] += children_count
-            stats["parents"] += len(chunks) - children_count
+            stats["chunks"] += sum(1 for c in chunks if _MODEL in c.metadata and not _is_view(c))
+            stats["parents"] += sum(1 for c in chunks if _MODEL not in c.metadata)
+            views = sum(1 for c in chunks if _is_view(c))
+            if views:
+                stats["views"] = stats.get("views", 0) + views
 
     def _write(self, doc_id: str, chunks: list[Chunk], vectors: dict[str, list[float]]) -> None:
         """
         写入一篇文档的新版本。顺序保证中途失败时数据仍可恢复：
-        先写子块（带向量）、再写父块、最后删旧版本多出来的片段 —— 任何一步失败，旧版本都还完整地在库里。
+        先写子块和视图（带向量）、再写父块、最后删旧版本多出来的片段 —— 任何一步失败，旧版本都还完整地在库里。
         """
-        children = [c for c in chunks if _MODEL in c.metadata]
+        embedded = [c for c in chunks if _MODEL in c.metadata]
         parents = [c for c in chunks if _MODEL not in c.metadata]
-        self.vector_index.add(children, [vectors[c.chunk_id] for c in children])
+        self.vector_index.add(embedded, [vectors[c.chunk_id] for c in embedded])
         self.vector_index.add(parents)
         old = self._docs.get(doc_id, {})
         new_ids = {c.chunk_id for c in chunks}
         self.vector_index.delete([cid for cid in old if cid not in new_ids])
 
+        children = [c for c in embedded if not _is_view(c)]
         self._bm25.remove(list(old))
         self._bm25.add(children)
         self._sparse.remove(list(old))
@@ -181,17 +209,20 @@ class KnowledgeBase:
             self._parents.pop(cid, None)
         self._parents.update((p.chunk_id, p) for p in parents)
         self._docs[doc_id] = {c.chunk_id: c for c in chunks}
-        if children:
+        if embedded:
             self._models.add(self.encoder.signature())
 
     def _is_current(self, doc_id: str, fingerprint: str) -> bool:
-        """库里已有这篇文档的同一版本，并且片段齐全（没有写了一半的情况）。"""
+        """
+        库里已有这篇文档的同一版本，并且片段齐全（没有写了一半的情况）、增强都完成了。
+        增强失败的文档下次建库重新写入：增强结果有缓存，只有失败的那几次大模型调用会重来。
+        """
         stored = self._docs.get(doc_id)
         if not stored:
             return False
         expected = {c.metadata.get(_DOC_CHUNKS) for c in stored.values()}
         fingerprints = {c.metadata.get(_FINGERPRINT) for c in stored.values()}
-        return fingerprints == {fingerprint} and expected == {len(stored)}
+        return fingerprints == {fingerprint} and expected == {len(stored)} and not _unfinished(stored.values())
 
     def _fingerprint(self, doc: Document) -> str:
         """
@@ -205,6 +236,8 @@ class KnowledgeBase:
             type(self.chunker).__name__ + json.dumps(vars(self.chunker), sort_keys=True, default=str),
             self.encoder.signature(),
         ]
+        if self.enricher is not None:      # 不增强时指纹和以前一样，升级后老知识库不会全部重写
+            parts.append(self.enricher.signature())
         return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _sync(self) -> None:
@@ -226,9 +259,10 @@ class KnowledgeBase:
                 model = chunk.metadata.get(_MODEL)
                 if model is None:
                     parents[chunk.chunk_id] = chunk
-                else:
+                    continue
+                models.add(model)
+                if not _is_view(chunk):
                     children.append(chunk)
-                    models.add(model)
             bm25 = BM25Index(self._bm25.k1, self._bm25.b)
             bm25.add(children)
             sparse = SparseIndex()
@@ -251,24 +285,38 @@ class KnowledgeBase:
 
         同一个父块下命中多个子块时只保留一份，排在最靠前的子块的位置上，用它的分数；
         命中了哪些子块记在 debug["children"] 里，排障时能看出是哪几句话把父块召回的。
-        没有父块的片段原样保留，所以对任何切分器调用它都是安全的。
+        命中视图（假设问题、章节摘要）时先换回所属片段，debug["views"] 记下是哪个问题或摘要命中的。
+        没有父块的片段原样保留（同一片段只留一份），所以对任何切分器调用它都是安全的。
         """
         self._sync()
         expanded: list[ScoredChunk] = []
         seen: dict[str, ScoredChunk] = {}
         for hit in hits:
-            parent = self._parents.get(hit.chunk.metadata.get("parent_id", ""))
-            if parent is None:
+            chunk, via = self._owner(hit.chunk)
+            parent = self._parents.get(chunk.metadata.get("parent_id", ""))
+            target = parent or chunk
+            if target.chunk_id in seen:
+                merged = seen[target.chunk_id]
+            elif target is hit.chunk:          # 普通片段原样保留
+                merged = seen[target.chunk_id] = hit
                 expanded.append(hit)
-                continue
-            if parent.chunk_id in seen:
-                seen[parent.chunk_id].debug["children"].append(hit.chunk.chunk_id)
-                continue
-            merged = ScoredChunk(chunk=parent, score=hit.score, source=hit.source,
-                                 debug={**hit.debug, "children": [hit.chunk.chunk_id]})
-            seen[parent.chunk_id] = merged
-            expanded.append(merged)
+            else:
+                debug = {**hit.debug, "children": []} if parent else dict(hit.debug)
+                merged = ScoredChunk(chunk=target, score=hit.score, source=hit.source, debug=debug)
+                seen[target.chunk_id] = merged
+                expanded.append(merged)
+            if parent and chunk.chunk_id not in merged.debug["children"]:
+                merged.debug["children"].append(chunk.chunk_id)
+            if via:
+                merged.debug.setdefault("views", []).append(via)
         return expanded
+
+    def _owner(self, chunk: Chunk) -> tuple[Chunk, str | None]:
+        """视图换成所属片段，并返回命中的问题或摘要；普通片段原样返回。"""
+        if not _is_view(chunk):
+            return chunk, None
+        owner = self._docs.get(chunk.doc_id, {}).get(chunk.metadata[_VIEW_OF])
+        return (owner or chunk), chunk.metadata.get(_VIEW_TEXT)
 
     def get(self, chunk_id: str) -> Chunk | None:
         self._sync()
@@ -280,9 +328,10 @@ class KnowledgeBase:
         return sorted(self._docs)
 
     def chunks_of(self, doc_id: str) -> list[Chunk]:
-        """一篇文档的全部片段（子块和父块），按切分时的顺序排列；没有这篇文档时返回空列表。"""
+        """一篇文档的全部片段（子块和父块，不含视图），按切分时的顺序排列；没有这篇文档时返回空列表。"""
         self._sync()
-        return sorted(self._docs.get(doc_id, {}).values(), key=lambda c: c.position)
+        chunks = (c for c in self._docs.get(doc_id, {}).values() if not _is_view(c))
+        return sorted(chunks, key=lambda c: c.position)
 
     def remove(self, doc_ids: Iterable[str]) -> int:
         """
@@ -304,13 +353,18 @@ class KnowledgeBase:
     def stats(self) -> dict[str, int]:
         self._sync()
         self._check_model()
+        views = self._count_views()
         return {
             "documents": len(self._docs),
-            "chunks": len(self.vector_index),
+            "chunks": len(self.vector_index) - views,
             "bm25_chunks": len(self._bm25),
             "parents": len(self._parents),
+            **({"views": views} if views else {}),
             "dimension": self.encoder.dimension
         }
+
+    def _count_views(self) -> int:
+        return sum(1 for chunks in self._docs.values() for c in chunks.values() if _is_view(c))
 
     def verify(self, sample: int = 0) -> dict[str, object]:
         """
@@ -337,9 +391,10 @@ class KnowledgeBase:
         other = self._models - {self.encoder.signature()}
         if other:
             problems.append(f"片段库里有其他模型生成的向量 {sorted(other)}，当前 encoder 是 {self.encoder.signature()}")
+        views = self._count_views()
         stats = {
-            "documents": len(self._docs), "chunks": len(self.vector_index),
-            "bm25_chunks": len(self._bm25), "parents": len(self._parents),
+            "documents": len(self._docs), "chunks": len(self.vector_index) - views,
+            "bm25_chunks": len(self._bm25), "parents": len(self._parents), **({"views": views} if views else {}),
         }
         return {"ok": not problems, "problems": problems, **stats, "sampled": sample if not legacy else 0}
 
@@ -351,13 +406,13 @@ class KnowledgeBase:
         以及索引能把它查出来（索引没损坏）。结构检查只看数量和引用，发现不了这两类问题。
         样本在全部子块里等间隔抽取，结果可复现。正文完全相同的子块得分并列，谁排第一都算通过。
         """
-        children = sorted((c for chunks in self._docs.values() for c in chunks.values() if _MODEL in c.metadata),
-                          key=lambda c: c.chunk_id)
-        picked = children[::max(1, len(children) // sample)][:sample]
+        records = sorted((c for chunks in self._docs.values() for c in chunks.values() if _MODEL in c.metadata),
+                         key=lambda c: c.chunk_id)
+        picked = records[::max(1, len(records) // sample)][:sample]
         if not picked:
             return []
         try:
-            vectors = self.encoder.encode([c.text for c in picked], is_query=False)
+            vectors = self.encoder.encode([_embed_text(c) for c in picked], is_query=False)
         except Exception as exc:
             return [f"抽样核对向量时 embedding 调用失败，未能核对：{exc}"]
         problems: list[str] = []
@@ -383,7 +438,8 @@ class KnowledgeBase:
                 problems.append(f"{doc_id}：混有 {len(fingerprints)} 个版本的片段（上次写入中断），重新 build 会自动清理")
             elif expected != {len(chunks)}:
                 problems.append(f"{doc_id}：应有 {sorted(expected)} 个片段，实际 {len(chunks)} 个，重新 build 会自动补齐")
-        children = [c for chunks in self._docs.values() for c in chunks.values() if _MODEL in c.metadata]
+        embedded = [c for chunks in self._docs.values() for c in chunks.values() if _MODEL in c.metadata]
+        children = [c for c in embedded if not _is_view(c)]
         referenced = {c.metadata.get("parent_id") for c in children}
         missing = [c.chunk_id for c in children
                    if c.metadata.get("parent_id") and c.metadata["parent_id"] not in self._parents]
@@ -396,8 +452,17 @@ class KnowledgeBase:
             lacking = [c.chunk_id for c in children if not c.metadata.get(SPARSE_KEY)]
             if lacking:
                 problems.append(f"{len(lacking)} 个子块缺少稀疏向量，例如 {lacking[:3]}；重新 build 会补齐")
-        if len(self.vector_index) != len(children):
-            problems.append(f"可检索的片段 {len(self.vector_index)} 个，但子块有 {len(children)} 个")
+        stray = [c.chunk_id for c in embedded
+                 if _is_view(c) and c.metadata[_VIEW_OF] not in self._docs.get(c.doc_id, {})]
+        if stray:
+            problems.append(f"{len(stray)} 条视图（假设问题、摘要）的所属片段不存在，例如 {stray[:3]}")
+        unfinished = [c.chunk_id for chunks in self._docs.values() for c in chunks.values()
+                      if (c.metadata.get(ENRICH_KEY) or {}).get("failed")]
+        if unfinished:
+            problems.append(f"{len(unfinished)} 个片段的增强没有完成（调用大模型失败），例如 {unfinished[:3]}；"
+                            "重新 build 会重试（已完成的有缓存，不会重复调用）")
+        if len(self.vector_index) != len(embedded):
+            problems.append(f"可检索的记录 {len(self.vector_index)} 条，但子块和视图共有 {len(embedded)} 条")
         return problems
 
     def save(self, path: str) -> None:
@@ -410,3 +475,19 @@ class KnowledgeBase:
     def load(self, path: str) -> None:
         self.vector_index.load(path)
         self._synced = False
+
+
+def _views(chunk: Chunk, model: str) -> list[Chunk]:
+    """
+    片段的视图记录：每个假设问题、章节摘要一条，向量由问题或摘要生成。
+    正文存所属片段的正文 —— 命中后精排看到的是真正的内容，而不是一句问题；
+    元数据复制所属片段的（增强内容等除外），过滤条件对视图同样有效。
+    """
+    base = {k: v for k, v in chunk.metadata.items() if k not in _VIEW_SKIP}
+    return [Chunk(chunk_id=f"{chunk.chunk_id}@{kind}{i}", doc_id=chunk.doc_id, text=chunk.text, position=chunk.position,
+                  metadata={**base, _MODEL: model, _VIEW_OF: chunk.chunk_id, "view_kind": kind, _VIEW_TEXT: text})
+            for i, (kind, text) in enumerate(chunk.index_views())]
+
+
+def _unfinished(chunks: Iterable[Chunk]) -> bool:
+    return any((c.metadata.get(ENRICH_KEY) or {}).get("failed") for c in chunks)

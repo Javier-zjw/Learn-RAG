@@ -17,6 +17,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+# 建库时大模型写进片段元数据的增强内容（ingest/enrich.py）：
+#   {"context": 这一块在全文里的背景, "description": 表格 / 图片的描述, "questions": [假设问题],
+#    "summary": 章节摘要（父块）, "failed": [没完成的增强，下次建库重试]}
+ENRICH_KEY = "enrich"
+
 # 1. 索引侧（离线）数据结构
 @dataclass
 class Element:
@@ -86,6 +91,27 @@ class Chunk:
     text: str
     position: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def index_text(self) -> str:
+        """
+        建索引（向量、BM25、稀疏向量）用的文本：正文前面加上建库时大模型写的增强文本（这一块在全文里的背景、
+        表格和图片的描述）。增强文本只帮助"找到"这一块，交给大模型和页面展示的仍是原样的正文 ——
+        原文视图按正文在页面上对齐，掺进生成的句子就对不上了。
+        """
+        enrich = self.metadata.get(ENRICH_KEY) or {}
+        return "\n".join([*(enrich[k] for k in ("context", "description") if enrich.get(k)), self.text])
+
+    def index_views(self) -> list[tuple[str, str]]:
+        """
+        这一块的其他"粒度"：(类型, 文本) 列表，每条单独生成一个向量、命中后换回这一块（见 KnowledgeBase）。
+        假设问题和用户的提问措辞接近，章节摘要和概括性的提问接近，都是正文本身的向量够不着的问法。
+        """
+        enrich = self.metadata.get(ENRICH_KEY) or {}
+        views = [("question", q) for q in enrich.get("questions") or [] if q]
+        if enrich.get("summary"):
+            views.append(("summary", enrich["summary"]))
+        return views
 
     @classmethod
     def of(cls, doc: Document, text: str, position: int) -> "Chunk":
