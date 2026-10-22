@@ -81,6 +81,13 @@ class TextEncoder(ABC):
     def encode_one(self, text: str, *, is_query: bool = False) -> list[float]:
         return self.encode([text], is_query=is_query)[0]
 
+    # 能同时生成稀疏向量（词 → 权重）的模型（如 BGE-M3）设为 True，并实现 encode_sparse。
+    # 知识库据此在建库时把稀疏向量写进子块元数据，供稀疏召回通道使用；其他模型不受影响
+    supports_sparse: bool = False
+
+    def encode_sparse(self, texts: Sequence[str], *, is_query: bool = False) -> list[dict[str, float]]:
+        raise NotImplementedError(f"{type(self).__name__} 不生成稀疏向量，稀疏召回需要 BGE-M3（稠密 + 稀疏）")
+
     def signature(self) -> str:
         """
         模型身份：同一个索引里的向量必须来自同一个模型，否则查询向量和文档向量不可比，结果会莫名变差且不报错。

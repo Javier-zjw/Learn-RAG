@@ -237,9 +237,15 @@ def recommend(stats: dict[str, Any]) -> dict[str, Any]:
     settings["chunker"] = {"type": "structure", "chunk_size": chunk_size, "parent_size": parent_size,
                            "overlap_sentences": overlap}
 
-    # embedding 模型：只在能用的里面选。服务优先（不占本机资源），其次本地 BGE-M3，都没有才用 Hashing
-    local_encoder = next(e for e in environment.encoders() if e["type"] == "sentence_transformers")
-    if settings["encoder"]["type"] == "hashing" and local_encoder["available"]:
+    # embedding 模型：只在能用的里面选。服务优先（不占本机资源），其次本地 BGE-M3（能生成稀疏向量的版本优先），
+    # 都没有才用 Hashing
+    options = {e["type"]: e for e in environment.encoders()}
+    local_encoder = options["sentence_transformers"]
+    if settings["encoder"]["type"] == "hashing" and options["bge_m3"]["available"]:
+        settings["encoder"] = {"type": "bge_m3", "model": options["bge_m3"]["model"]}
+        reasons["encoder"] = (f"没有配置 embedding 服务，用本地 {options['bge_m3']['model']}：建库时同时生成稠密和稀疏向量，"
+                              "可以开第三路稀疏召回；首次建库会自动下载约 2.2 GB 的模型")
+    elif settings["encoder"]["type"] == "hashing" and local_encoder["available"]:
         settings["encoder"] = {"type": "sentence_transformers", "model": local_encoder["model"]}
         reasons["encoder"] = (f"没有配置 embedding 服务，用本地 {local_encoder['model']}：中英文检索效果都好；"
                               "首次建库会自动下载约 2.2 GB 的模型，CPU 上向量化比服务慢")
@@ -266,7 +272,11 @@ def recommend(stats: dict[str, Any]) -> dict[str, Any]:
     else:
         settings["reranker"] = {"type": "lexical", "model": ""}
         reasons["reranker"] = "没有可用的 bge-reranker（服务或本地模型），先用词重叠精排；它判别力有限，召回候选保持 20 个"
-    settings["retrieval"] = {"candidate_k": 20 if settings["reranker"]["type"] == "lexical" else 50, "top_k": 5}
+    settings["retrieval"] = {**settings["retrieval"], "top_k": 5,
+                             "candidate_k": 20 if settings["reranker"]["type"] == "lexical" else 50}
+    if settings["encoder"]["type"] == "bge_m3":
+        settings["retrieval"]["weights"] = {"vector": 1.0, "bm25": 1.0, "sparse": 1.0}
+        reasons["fusion"] = "BGE-M3 能生成稀疏向量：向量、BM25、稀疏三路等权融合，权重可以用评测集调（learn-rag tune）"
 
     # 向量库
     if settings["index"]["type"] == "chroma":

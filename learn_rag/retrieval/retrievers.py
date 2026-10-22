@@ -56,6 +56,23 @@ class BM25Retriever(Retriever):
         return self.kb.bm25_index.search(query, top_k, where=_merge(self.where, where))
 
 
+@registry.register("retriever", "sparse")
+class SparseRetriever(Retriever):
+    """
+    稀疏向量召回（BGE-M3 的词权重）：问题和片段的稀疏向量做内积。
+    要求知识库的 embedding 模型能生成稀疏向量；过滤语法和其他通道相同。
+    """
+
+    def __init__(self, kb: KnowledgeBase, where: dict | None = None) -> None:
+        self.kb = kb
+        self.where = where
+
+    def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
+        index = self.kb.sparse_index          # 模型不支持稀疏向量时，这里给出清楚的报错
+        weights = self.kb.encoder.encode_sparse([query], is_query=True)[0]
+        return index.search(weights, top_k, where=_merge(self.where, where))
+
+
 @registry.register("retriever", "hybrid")
 class HybridRetriever(Retriever):
     """
@@ -81,22 +98,33 @@ class HybridRetriever(Retriever):
         self.overfetch = overfetch
 
     def retrieve(self, query: str, top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
-        fetch = max(top_k, int(top_k * self.overfetch))
-        fused: dict[str, float] = defaultdict(float)
-        pool: dict[str, ScoredChunk] = {}
-        debug: dict[str, dict[str, float]] = defaultdict(dict)
+        fetch = fetch_size(top_k, self.overfetch)
+        lists = [channel.retrieve(query, fetch, where=where) for channel in self.channels]
+        return rrf_fuse(lists, self.weights, self.rrf_k, top_k)
 
-        for weight, channel in zip(self.weights, self.channels):
-            for rank, hit in enumerate(channel.retrieve(query, fetch, where=where)):
-                fused[hit.chunk.chunk_id] += weight / (self.rrf_k + rank + 1)
-                pool.setdefault(hit.chunk.chunk_id, hit)
-                debug[hit.chunk.chunk_id][hit.source] = hit.score
 
-        ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:top_k]
-        return [
-            ScoredChunk(chunk=pool[cid].chunk, score=score, source="hybrid", debug=dict(debug[cid]))
-            for cid, score in ranked
-        ]
+def fetch_size(top_k: int, overfetch: float = 2.0) -> int:
+    """混合召回时每一路取多少个：多取一些，融合后才取得够 top_k 个、且排序更稳。"""
+    return max(top_k, int(top_k * overfetch))
+
+
+def rrf_fuse(lists: Sequence[Sequence[ScoredChunk]], weights: Sequence[float], rrf_k: int,
+             top_k: int) -> list[ScoredChunk]:
+    """
+    RRF 融合：score = Σ w_i / (k + rank_i)。混合召回和调参工具（eval/tuning.py）共用这一份公式，
+    调参时模拟出来的排序和线上完全一致。
+    """
+    fused: dict[str, float] = defaultdict(float)
+    pool: dict[str, ScoredChunk] = {}
+    debug: dict[str, dict[str, float]] = defaultdict(dict)
+    for weight, hits in zip(weights, lists):
+        for rank, hit in enumerate(hits):
+            fused[hit.chunk.chunk_id] += weight / (rrf_k + rank + 1)
+            pool.setdefault(hit.chunk.chunk_id, hit)
+            debug[hit.chunk.chunk_id][hit.source] = hit.score
+    ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:top_k]
+    return [ScoredChunk(chunk=pool[cid].chunk, score=score, source="hybrid", debug=dict(debug[cid]))
+            for cid, score in ranked]
 
 
 @registry.register("retriever", "transformed")
@@ -136,7 +164,7 @@ class MultiQueryTransformer(QueryTransformer):
     """
     PROMPT = "请把下面的问题改写成 {n} 个语义等价但用词不同的检索查询，每行一个，不要编号，不要解释。\n问题：{q}"
 
-    def __int__(self, llm: LLM, n: int = 3) -> None:
+    def __init__(self, llm: LLM, n: int = 3) -> None:
         self.llm = llm
         self.n = n
 

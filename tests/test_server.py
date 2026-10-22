@@ -224,7 +224,8 @@ class TestServer(unittest.TestCase):
         self.assertEqual(info["settings"]["reranker"]["type"], "lexical")
         body = {"reranker": {"type": "identity"}, "retrieval": {"candidate_k": 30, "top_k": 3}}
         summary = self.client.put(f"/api/kbs/{kb_id}/retrieval", json=body).json()
-        self.assertEqual(summary["settings"]["retrieval"], {"candidate_k": 30, "top_k": 3})
+        self.assertEqual({k: summary["settings"]["retrieval"][k] for k in ("candidate_k", "top_k")},
+                         {"candidate_k": 30, "top_k": 3})
         self.assertFalse(summary["busy"])                                   # 没有启动建库任务
         pipe = self.library.pipeline(kb_id)
         self.assertIsInstance(pipe.reranker, IdentityReranker)
@@ -241,6 +242,38 @@ class TestServer(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 pipe.retrieve_only("安装步骤")
             self.assertIn('pip install -e ".[local]"', str(ctx.exception))
+
+    def test_fusion_settings_build_the_retriever(self):
+        import os
+        from unittest.mock import patch
+
+        from learn_rag.retrieval.retrievers import HybridRetriever, MultiQueryTransformer, TransformedRetriever
+
+        kb_id, _ = self._create({"encoder": _HASHING, "index": {"type": "flat"}})
+        pipe = self.library.pipeline(kb_id)
+        self.assertIsInstance(pipe.retriever, HybridRetriever)
+        self.assertEqual((pipe.retriever.weights, pipe.retriever.rrf_k), ([1.0, 1.0], 60))
+
+        only_bm25 = {"retrieval": {"weights": {"vector": 0, "bm25": 1}, "rrf_k": 20}}
+        self.assertEqual(self.client.put(f"/api/kbs/{kb_id}/retrieval", json=only_bm25).status_code, 200)
+        pipe = self.library.pipeline(kb_id)
+        self.assertEqual((len(pipe.retriever.channels), pipe.retriever.rrf_k), (1, 20))
+        self.assertTrue(pipe.retrieve_only("安装步骤").contexts)
+
+        for body, hint in [({"retrieval": {"weights": {"vector": 0, "bm25": 0}}}, "至少有一路"),
+                           ({"retrieval": {"weights": {"vector": 1, "sparse": 1}}}, "BGE-M3"),
+                           ({"retrieval": {"query_transform": "multi_query"}}, "大模型")]:
+            with patch.dict(os.environ, {"LLM_API_KEY": "", "LLM_BASE_URL": ""}):
+                response = self.client.put(f"/api/kbs/{kb_id}/retrieval", json=body)
+            self.assertEqual(response.status_code, 400, body)
+            self.assertIn(hint, response.json()["detail"])
+
+        with patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_BASE_URL": "http://llm.local/v1"}):
+            self.client.put(f"/api/kbs/{kb_id}/retrieval", json={"retrieval": {"query_transform": "multi_query"}})
+            pipe = self.library.pipeline(kb_id)
+        self.assertIsInstance(pipe.retriever, TransformedRetriever)
+        self.assertIsInstance(pipe.retriever.transformer, MultiQueryTransformer)
+        self.assertEqual(pipe.retriever.transformer.llm.base_url, "http://llm.local/v1")
 
     def test_local_bge_m3_is_configured_but_loaded_lazily(self):
         from unittest.mock import patch
@@ -273,6 +306,7 @@ class TestServer(unittest.TestCase):
         self.assertEqual(info["settings"]["reranker"]["type"], "lexical")
         pipe = reopened.pipeline(kb_id)
         self.assertEqual((pipe.candidate_k, pipe.top_k), (20, 5))
+        self.assertEqual((pipe.retriever.weights, pipe.retriever.rrf_k), ([1.0, 1.0], 60))    # 升级前的融合方式
 
     @unittest.skipUnless(_has("chromadb"), "未安装 chromadb")
     def test_chroma_kb_survives_restart_and_can_be_deleted(self):

@@ -19,17 +19,37 @@ _SHARED_LOCK = threading.Lock()
 
 def shared_model(kind: str, name: str, device: str | None = None):
     """
-    进程内共享的本地模型（sentence-transformers 的 SentenceTransformer / CrossEncoder）。
-    页面服务里每个知识库各有一条管线，按模型名共享后，用同一个 bge-m3 的知识库只占一份内存。
+    进程内共享的本地模型。kind：sentence_transformer（向量模型）、cross_encoder（精排模型）、
+    bge_m3（FlagEmbedding 的 BGE-M3，一次前向同时给出稠密和稀疏向量）。
+    页面服务里每个知识库各有一条管线，按模型名共享后，用同一个模型的知识库只占一份内存。
     """
     key = (kind, name, device)
     with _SHARED_LOCK:
         if key not in _SHARED:
-            try:
-                import sentence_transformers   # 延迟导入：不装也能用别的实现
-            except ImportError:
-                raise RuntimeError('本地模型需要 sentence-transformers：pip install -e ".[local]"') from None
-            loader = sentence_transformers.CrossEncoder if kind == "cross_encoder" else sentence_transformers.SentenceTransformer
             logger.info("加载本地模型 %s（首次使用会从 HuggingFace 下载）……", name)
-            _SHARED[key] = loader(name, device=device)
+            _SHARED[key] = _LOADERS[kind](name, device)
         return _SHARED[key]
+
+
+def _sentence_transformers():
+    try:
+        import sentence_transformers   # 延迟导入：不装也能用别的实现
+    except ImportError:
+        raise RuntimeError('本地模型需要 sentence-transformers：pip install -e ".[local]"') from None
+    return sentence_transformers
+
+
+def _bge_m3(name: str, device: str | None):
+    try:
+        from FlagEmbedding import BGEM3FlagModel
+    except ImportError:
+        raise RuntimeError('BGE-M3（稠密 + 稀疏）需要 FlagEmbedding：pip install -e ".[bge-m3]"') from None
+    # use_fp16 只在 GPU 上有意义，CPU 上开了反而报错或变慢
+    return BGEM3FlagModel(name, use_fp16=bool(device and device.startswith("cuda")))
+
+
+_LOADERS = {
+    "sentence_transformer": lambda name, device: _sentence_transformers().SentenceTransformer(name, device=device),
+    "cross_encoder": lambda name, device: _sentence_transformers().CrossEncoder(name, device=device),
+    "bge_m3": _bge_m3,
+}

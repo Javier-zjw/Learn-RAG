@@ -31,6 +31,8 @@ parsing = [
 # 高精度解析工具（体积大，按需安装）
 mineru = ["mineru>=4.0,<5"]
 docling = ["docling>=2.0"]
+# BGE-M3 稠密 + 稀疏向量（稀疏召回通道）
+bge-m3 = ["FlagEmbedding>=1.2"]
 # 可视化建库页面的后端
 web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 all = [

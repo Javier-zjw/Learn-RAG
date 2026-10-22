@@ -274,6 +274,71 @@ class BM25Index:
         return len(self._slots)
 
 
+# 子块元数据里存稀疏向量的字段（词 → 权重），由知识库在建库时写入
+SPARSE_KEY = "sparse"
+
+
+class SparseIndex:
+    """
+    稀疏向量倒排（BGE-M3 的"词 → 权重"）。打分是查询和片段稀疏向量的内积，即 BGE-M3 论文里的 lexical matching 分数。
+
+    和 BM25 的区别：BM25 的词权重来自统计（词频、逆文档频率），稀疏向量的词权重由模型按上下文学出来，
+    同样是关键词匹配，但知道"的、是"不重要、知道一个词在这句话里重要不重要；和稠密向量互补。
+    和 BM25 一样不单独落盘：稀疏向量存在子块元数据里，知识库打开时从片段库重建。
+    删除只标记空位，空位过半时整体压缩。
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[Chunk | None] = []
+        self._weights: list[dict[str, float]] = []
+        self._postings: dict[str, list[int]] = defaultdict(list)
+        self._slots: dict[str, int] = {}
+
+    def add(self, chunks: Sequence[Chunk]) -> None:
+        """没有稀疏向量的片段（模型不支持或旧数据）不进索引。"""
+        self.remove([c.chunk_id for c in chunks])
+        for chunk in chunks:
+            weights = chunk.metadata.get(SPARSE_KEY) or {}
+            if not weights:
+                continue
+            slot = len(self._chunks)
+            for term in weights:
+                self._postings[term].append(slot)
+            self._chunks.append(chunk)
+            self._weights.append(weights)
+            self._slots[chunk.chunk_id] = slot
+
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        for chunk_id in chunk_ids:
+            slot = self._slots.pop(chunk_id, None)
+            if slot is not None:
+                self._chunks[slot], self._weights[slot] = None, {}
+        if len(self._chunks) > 2 * len(self._slots) + 64:
+            keep = [i for i, chunk in enumerate(self._chunks) if chunk is not None]
+            self._chunks = [self._chunks[i] for i in keep]
+            self._weights = [self._weights[i] for i in keep]
+            self._slots = {chunk.chunk_id: i for i, chunk in enumerate(self._chunks)}
+            self._postings = defaultdict(list)
+            for slot, weights in enumerate(self._weights):
+                for term in weights:
+                    self._postings[term].append(slot)
+
+    def search(self, query: dict[str, float], top_k: int, *, where: dict[str, Any] | None = None) -> list[ScoredChunk]:
+        """query 是问题的稀疏向量。where 与其他通道的过滤语法相同，在取 top_k 之前过滤。"""
+        scores: dict[int, float] = defaultdict(float)
+        for term, weight in query.items():
+            for slot in self._postings.get(term, ()):
+                chunk = self._chunks[slot]
+                if chunk is None or (where and not _match(chunk.metadata, where)):
+                    continue
+                scores[slot] += weight * self._weights[slot][term]
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1])[:top_k]
+        return [ScoredChunk(chunk=self._chunks[i], score=float(s), source="sparse") for i, s in ranked]
+
+    def __len__(self) -> int:
+        return len(self._slots)
+
+
 def _terms(text: str) -> list[str]:
     """建索引的切词：通用切词（中文单字和二元组、英文单词、数字）加上整体的编号。编号拆出的碎片也保留，搜编号的一部分（0386）仍能命中。"""
     return index_tokens(text) + code_tokens(text)

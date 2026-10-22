@@ -33,7 +33,7 @@ from pathlib import Path
 
 from ..core.interfaces import Chunker, TextEncoder, VectorIndex
 from ..core.types import Chunk, Document, ScoredChunk
-from .indexes import BM25Index, FlatVectorIndex
+from .indexes import SPARSE_KEY, BM25Index, FlatVectorIndex, SparseIndex
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class KnowledgeBase:
         self.chunker = chunker
         self.vector_index = vector_index if vector_index is not None else FlatVectorIndex()
         self._bm25 = bm25_index if bm25_index is not None else BM25Index()
+        self._sparse = SparseIndex()           # encoder 支持稀疏向量（BGE-M3）时才有内容
         self.batch_size = batch_size
         # 以下都是派生数据，由 _sync 从片段库重建
         self._docs: dict[str, dict[str, Chunk]] = {}     # doc_id -> {chunk_id: 片段}
@@ -69,6 +70,15 @@ class KnowledgeBase:
         self._sync()
         self._check_model()
         return self._bm25
+
+    @property
+    def sparse_index(self) -> SparseIndex:
+        self._sync()
+        self._check_model()
+        if not self.encoder.supports_sparse:
+            raise ValueError(f"稀疏召回需要 embedding 模型同时生成稀疏向量（BGE-M3 稠密 + 稀疏），"
+                             f"当前是 {self.encoder.signature()}；换模型后要重建知识库")
+        return self._sparse
 
     def add(self, documents: Iterable[Document], *, progress: bool = False) -> dict[str, int]:
         """
@@ -117,6 +127,8 @@ class KnowledgeBase:
         children = [c for _, chunks in pending for c in chunks if _MODEL in c.metadata]
         try:
             vectors = self.encoder.encode([c.text for c in children], is_query=False)
+            # 稀疏向量和稠密向量来自同一个模型（BGE-M3 一次前向同时算出），写进子块元数据，随片段一起存
+            sparse = self.encoder.encode_sparse([c.text for c in children]) if self.encoder.supports_sparse else None
         except Exception as exc:
             doc_ids = [doc_id for doc_id, _ in pending]
             logger.error("embedding 失败，跳过 %d 篇文档 %s：%s", len(doc_ids), doc_ids[:5], exc)
@@ -127,6 +139,13 @@ class KnowledgeBase:
                          len(vectors), len(children), len(pending))
             stats["failed"] += len(pending)
             return
+        if sparse is not None:
+            if len(sparse) != len(children):
+                logger.error("encoder 返回 %d 条稀疏向量，但提交了 %d 段文本，跳过这一批", len(sparse), len(children))
+                stats["failed"] += len(pending)
+                return
+            for chunk, weights in zip(children, sparse):
+                chunk.metadata[SPARSE_KEY] = weights
         by_id = {c.chunk_id: v for c, v in zip(children, vectors)}
         for doc_id, chunks in pending:
             try:
@@ -155,6 +174,8 @@ class KnowledgeBase:
 
         self._bm25.remove(list(old))
         self._bm25.add(children)
+        self._sparse.remove(list(old))
+        self._sparse.add(children)
         for cid in old:
             self._parents.pop(cid, None)
         self._parents.update((p.chunk_id, p) for p in parents)
@@ -209,7 +230,9 @@ class KnowledgeBase:
                     models.add(model)
             bm25 = BM25Index(self._bm25.k1, self._bm25.b)
             bm25.add(children)
-            self._docs, self._parents, self._models, self._bm25 = docs, parents, models, bm25
+            sparse = SparseIndex()
+            sparse.add(children)
+            self._docs, self._parents, self._models, self._bm25, self._sparse = docs, parents, models, bm25, sparse
             self._synced = True
 
     def _check_model(self) -> None:
@@ -270,6 +293,7 @@ class KnowledgeBase:
         chunk_ids = [cid for doc_id in doc_ids for cid in self._docs[doc_id]]
         self.vector_index.delete(chunk_ids)
         self._bm25.remove(chunk_ids)
+        self._sparse.remove(chunk_ids)
         for cid in chunk_ids:
             self._parents.pop(cid, None)
         for doc_id in doc_ids:
@@ -367,6 +391,10 @@ class KnowledgeBase:
         orphans = [pid for pid in self._parents if pid not in referenced]
         if orphans:
             problems.append(f"{len(orphans)} 个父块没有子块引用，例如 {orphans[:3]}")
+        if self.encoder.supports_sparse:
+            lacking = [c.chunk_id for c in children if not c.metadata.get(SPARSE_KEY)]
+            if lacking:
+                problems.append(f"{len(lacking)} 个子块缺少稀疏向量，例如 {lacking[:3]}；重新 build 会补齐")
         if len(self.vector_index) != len(children):
             problems.append(f"可检索的片段 {len(self.vector_index)} 个，但子块有 {len(children)} 个")
         return problems

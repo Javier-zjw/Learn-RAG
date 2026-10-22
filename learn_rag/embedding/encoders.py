@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -240,6 +241,55 @@ class SentenceTransformerEncoder(TextEncoder):
         return [list(map(float, row)) for row in arr]
 
 
+@registry.register("encoder", "bge_m3")
+class BGEM3Encoder(TextEncoder):
+    """
+    BGE-M3（FlagEmbedding）：一次前向同时给出稠密向量（1024 维）和稀疏向量（每个词的权重）。
+
+    稠密向量进向量索引，稀疏向量由知识库写进子块元数据、建成稀疏倒排，作为混合召回的第三路。
+    知识库先调 encode 再调 encode_sparse：encode 时把同一批文本的稀疏向量顺带算好放进缓存，
+    encode_sparse 直接取，模型只跑一遍。查询时同理（向量通道和稀疏通道各要一次，只算一次）。
+    BGE-M3 不需要查询前缀。模型第一次用到时才加载，进程内按模型名共享（core.local_models）。
+    """
+
+    supports_sparse = True
+    dimension = 1024
+    _CACHE_SIZE = 4096
+
+    def __init__(self, model_name: str = "BAAI/bge-m3", batch_size: int = 16, max_length: int = 1024,
+                 device: str | None = None) -> None:
+        self.model_name, self.batch_size, self.max_length, self.device = model_name, batch_size, max_length, device
+        self._sparse_cache: OrderedDict[str, dict[str, float]] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    def signature(self) -> str:
+        return f"bge_m3:{self.model_name}|dense+sparse"
+
+    def encode(self, texts: Sequence[str], *, is_query: bool = False) -> list[list[float]]:
+        return self._run(list(texts))
+
+    def encode_sparse(self, texts: Sequence[str], *, is_query: bool = False) -> list[dict[str, float]]:
+        with self._cache_lock:
+            missing = [t for t in dict.fromkeys(texts) if t not in self._sparse_cache]
+        if missing:
+            self._run(missing)
+        with self._cache_lock:
+            return [self._sparse_cache[t] for t in texts]
+
+    def _run(self, texts: list[str]) -> list[list[float]]:
+        model = shared_model("bge_m3", self.model_name, self.device)
+        out = model.encode(texts, batch_size=self.batch_size, max_length=self.max_length,
+                           return_dense=True, return_sparse=True, return_colbert_vecs=False)
+        with self._cache_lock:
+            for text, weights in zip(texts, out["lexical_weights"]):
+                # 键是词表里的 token id（字符串），权重转成普通 float 才能写进 JSON 元数据
+                self._sparse_cache[text] = {str(k): round(float(v), 4) for k, v in weights.items()}
+                self._sparse_cache.move_to_end(text)
+            while len(self._sparse_cache) > self._CACHE_SIZE:
+                self._sparse_cache.popitem(last=False)
+        return [_l2_normalize([float(x) for x in row]) for row in out["dense_vecs"]]
+
+
 @registry.register("encoder", "cached")
 class CachingEncoder(TextEncoder):
     """给任意 encoder 套一层缓存（内存 + 可选磁盘）。
@@ -259,6 +309,14 @@ class CachingEncoder(TextEncoder):
 
     def signature(self) -> str:
         return self.inner.signature()
+
+    @property
+    def supports_sparse(self) -> bool:      # type: ignore[override]
+        return self.inner.supports_sparse
+
+    def encode_sparse(self, texts: Sequence[str], *, is_query: bool = False) -> list[dict[str, float]]:
+        # 稀疏向量不缓存：只有 BGE-M3 生成，它在编码稠密向量时已经顺带算好了
+        return self.inner.encode_sparse(texts, is_query=is_query)
 
     def _key(self, text: str, is_query: bool) -> str:
         # 键里带上模型身份：换了模型、缓存文件没换时，不会把旧模型的向量当成新模型的返回

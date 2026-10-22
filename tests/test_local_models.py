@@ -51,6 +51,31 @@ class _FakeCrossEncoder:
         return [len(set(index_tokens(q)) & set(index_tokens(t))) for q, t in pairs]
 
 
+class _FakeBGEM3:
+    """FlagEmbedding.BGEM3FlagModel 的替身：稠密向量用 hashing，稀疏向量用"词 → 出现比例"。"""
+
+    loads: list[str] = []
+    calls = 0
+
+    def __init__(self, name, use_fp16=False):
+        _FakeBGEM3.loads.append(name)
+        self._hashing = HashingEncoder(dimension=48)
+
+    def encode(self, texts, batch_size=16, max_length=1024, return_dense=True, return_sparse=False,
+               return_colbert_vecs=False):
+        import numpy as np
+
+        _FakeBGEM3.calls += 1
+        sparse = []
+        for text in texts:
+            tokens = index_tokens(text)
+            sparse.append({t: np.float16(tokens.count(t) / len(tokens)) for t in set(tokens)} if tokens else {})
+        return {"dense_vecs": np.array(self._hashing.encode(list(texts))), "lexical_weights": sparse}
+
+
+_FLAG = types.ModuleType("FlagEmbedding")
+_FLAG.BGEM3FlagModel = _FakeBGEM3
+
 _FAKE = types.ModuleType("sentence_transformers")
 _FAKE.SentenceTransformer = _FakeSentenceTransformer
 _FAKE.CrossEncoder = _FakeCrossEncoder
@@ -114,6 +139,75 @@ class TestLocalModels(unittest.TestCase):
         doc = reopened.document(kb_id, "查看.md")
         self.assertTrue(doc["children"])
         self.assertEqual(_FakeSentenceTransformer.loads, [])
+
+
+def _has_chroma() -> bool:
+    try:
+        import chromadb  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@unittest.skipUnless(_has_chroma(), "未安装 chromadb")
+class TestSparseChannel(unittest.TestCase):
+    """BGE-M3 稠密 + 稀疏：稀疏向量随片段存进 Chroma，稀疏倒排从片段库重建，作为第三路召回。"""
+
+    def setUp(self) -> None:
+        from learn_rag.server.library import Library
+
+        _FakeBGEM3.loads, _FakeBGEM3.calls = [], 0
+        local_models._SHARED.clear()
+        for p in (patch.dict(sys.modules, {"FlagEmbedding": _FLAG}),
+                  patch("learn_rag.server.environment.has_flag_embedding", return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(local_models._SHARED.clear)
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.library = Library(self.tmp)
+        docs = {
+            "运维.md": "# 运维手册\n\n## 备份\n\n" + "数据库每晚两点全量备份，保留三十天，备份失败自动告警。" * 3,
+            "财务.md": "# 报销制度\n\n## 时限\n\n" + "差旅报销需在出差结束后三十天内提交，逾期需部门负责人说明。" * 3,
+        }
+        upload_id = None
+        for name, text in docs.items():
+            upload_id, _ = self.library.staging.save(upload_id, name, io.BytesIO(text.encode("utf-8")))
+        settings = {"encoder": {"type": "bge_m3"}, "index": {"type": "chroma"},
+                    "retrieval": {"weights": {"vector": 1, "bm25": 1, "sparse": 1}}}
+        created = self.library.create("三路召回", settings, upload_id)
+        job = self.library.jobs.wait(created["job"]["id"])
+        self.assertEqual(job.status, "done", job.error)
+        self.assertTrue(job.verify["ok"], job.verify["problems"])
+        self.kb = created["kb"]["id"]
+
+    def test_sparse_vectors_are_stored_and_searchable(self):
+        pipe = self.library.pipeline(self.kb)
+        children = [c for d in pipe.kb.documents() for c in pipe.kb.chunks_of(d) if "embedding_model" in c.metadata]
+        self.assertTrue(children)
+        self.assertTrue(all(isinstance(c.metadata.get("sparse"), dict) and c.metadata["sparse"] for c in children))
+        self.assertEqual(len(pipe.retriever.channels), 3)                     # 向量 + BM25 + 稀疏
+
+        from learn_rag.retrieval.retrievers import SparseRetriever
+
+        sparse = SparseRetriever(pipe.kb)
+        self.assertEqual(sparse.retrieve("数据库备份保留多久", 1)[0].doc_id, "运维.md")
+        self.assertEqual({h.doc_id for h in sparse.retrieve("三十天", 5)}, {"运维.md", "财务.md"})   # 两篇都有
+        self.assertEqual({h.doc_id for h in sparse.retrieve("三十天", 5, where={"doc_id": "财务.md"})}, {"财务.md"})
+        calls = _FakeBGEM3.calls
+        pipe.retrieve_only("差旅报销时限")                                     # 向量和稀疏两路共用一次模型调用
+        self.assertEqual(_FakeBGEM3.calls, calls + 1)
+        self.assertEqual(_FakeBGEM3.loads, ["BAAI/bge-m3"])
+
+    def test_sparse_index_follows_the_store(self):
+        from learn_rag.server.library import Library
+
+        self.library.remove_document(self.kb, "财务.md")
+        reopened = Library(self.tmp)                                          # 换一个进程：稀疏倒排从 Chroma 重建
+        kb = reopened.pipeline(self.kb).kb
+        self.assertEqual(len(kb.sparse_index), len([c for c in kb.chunks_of("运维.md") if "embedding_model" in c.metadata]))
+        self.assertEqual({h.doc_id for h in kb.sparse_index.search({"报": 1.0, "销": 1.0}, 5)}, set())
+        self.assertTrue(kb.verify()["ok"])
 
 
 if __name__ == "__main__":

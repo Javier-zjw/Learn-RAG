@@ -36,7 +36,12 @@ _PACKAGES = [
     ("openpyxl", "Excel 解析（openpyxl）", 'pip install -e ".[parsing]"'),
     ("docling", "Docling 高精度解析", 'pip install -e ".[docling]"'),
     ("sentence_transformers", "本地 BGE-M3 / bge-reranker（sentence-transformers）", 'pip install -e ".[local]"'),
+    ("FlagEmbedding", "BGE-M3 稠密 + 稀疏（FlagEmbedding）", 'pip install -e ".[bge-m3]"'),
 ]
+
+# 混合召回的默认融合方式：向量和 BM25 等权、RRF 常数 60（论文推荐值），不改写查询。
+# 稀疏通道（bge-m3 的稀疏向量）只有 embedding 选 BGE-M3（FlagEmbedding）时才能开
+DEFAULT_FUSION = {"weights": {"vector": 1.0, "bm25": 1.0, "sparse": 0.0}, "rrf_k": 60, "query_transform": "none"}
 
 # 本地模型的默认名称：HuggingFace 上的名字（首次使用自动下载），也可以在 .env 里改成已下载好的本地目录
 BGE_M3 = "BAAI/bge-m3"
@@ -63,6 +68,25 @@ def has_chroma() -> bool:
     return _installed("chromadb")
 
 
+def has_llm() -> bool:
+    """配置了大模型服务（查询改写、多轮对话问题补全、出题都要用）。"""
+    load_env()
+    return bool(os.getenv("LLM_API_KEY") or os.getenv("LLM_BASE_URL"))
+
+
+def query_transforms() -> list[dict[str, Any]]:
+    """可选的查询改写。改写要调用大模型，每次查询多一次（HyDE）或几次（多查询）调用。"""
+    llm = has_llm()
+    note = "" if llm else "未配置大模型（.env 中的 LLM_BASE_URL / LLM_API_KEY）"
+    return [
+        {"type": "none", "label": "不改写", "available": True, "note": "直接用原问题检索"},
+        {"type": "multi_query", "label": "多查询改写", "available": llm,
+         "note": note or "大模型把问题改写成 3 种说法分别召回再合并，缓解用户措辞和文档措辞不一致"},
+        {"type": "hyde", "label": "HyDE", "available": llm,
+         "note": note or "大模型先写一段假设答案，用它和原问题一起检索，口语化、很短的问题受益最大"},
+    ]
+
+
 def has_ocr() -> bool:
     """OCR 解析器未配置 OCR_* 时沿用 LLM_* 的服务。"""
     load_env()
@@ -73,11 +97,16 @@ def has_local_models() -> bool:
     return _installed("sentence_transformers")
 
 
+def has_flag_embedding() -> bool:
+    return _installed("FlagEmbedding")
+
+
 def encoders() -> list[dict[str, Any]]:
     """可选的 embedding 模型。"""
     load_env()
     configured = bool(os.getenv("EMBEDDING_API_KEY") or os.getenv("EMBEDDING_BASE_URL"))
     local = has_local_models()
+    flag = has_flag_embedding()
     return [
         {
             "type": "hashing", "label": "Hashing（离线演示）", "model": "hashing", "available": True,
@@ -97,6 +126,13 @@ def encoders() -> list[dict[str, Any]]:
             "note": "在本机运行，中英文都强，1024 维；首次使用自动下载约 2.2 GB，"
                     "也可以在 .env 的 LOCAL_EMBEDDING_MODEL 填已下载好的目录" if local
             else '未安装 sentence-transformers：pip install -e ".[local]"',
+        },
+        {
+            "type": "bge_m3", "label": "BGE-M3（稠密 + 稀疏）",
+            "model": os.getenv("LOCAL_EMBEDDING_MODEL") or BGE_M3,
+            "available": flag,
+            "note": "本机运行，建库时同时生成稀疏向量，可开第三路“稀疏召回”；首次使用自动下载约 2.2 GB" if flag
+            else '未安装 FlagEmbedding：pip install -e ".[bge-m3]"',
         },
     ]
 
@@ -146,7 +182,7 @@ def parser_choices() -> dict[str, list[dict[str, Any]]]:
 def default_settings() -> dict[str, Any]:
     """新建知识库时表单的初始值：和 configs/parsing.yaml 的切分参数一致，模型和解析器取当前能用的。"""
     # 默认只选已经配置好的服务，不默认选本地模型：本地模型首次使用要下载几个 GB，应该由用户自己决定
-    available = [e for e in encoders() if e["available"] and e["type"] != "sentence_transformers"]
+    available = [e for e in encoders() if e["available"] and e["type"] not in ("sentence_transformers", "bge_m3")]
     encoder = next((e for e in available if e["type"] != "hashing"), available[0])
     ranker = next(r for r in rerankers() if r["type"] in ("api", "lexical") and r["available"])
     return {
@@ -161,7 +197,7 @@ def default_settings() -> dict[str, Any]:
         "ocr": False,
         "reranker": {"type": ranker["type"], "model": ranker["model"]},
         # 有真正的精排时召回 50 个候选给它挑；词重叠精排判别力有限，候选多了反而引入噪声
-        "retrieval": {"candidate_k": 50 if ranker["type"] == "api" else 20, "top_k": 5},
+        "retrieval": {"candidate_k": 50 if ranker["type"] == "api" else 20, "top_k": 5, **DEFAULT_FUSION},
     }
 
 
@@ -177,6 +213,8 @@ def report() -> dict[str, Any]:
     return {
         "encoders": encoders(),
         "rerankers": rerankers(),
+        "query_transforms": query_transforms(),
+        "llm": has_llm(),
         "keys": [{"name": name, "label": label, "configured": bool(os.getenv(name))} for name, label in _KEYS.items()],
         "packages": packages,
         "parsers": parser_choices(),

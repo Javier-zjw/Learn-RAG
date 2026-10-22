@@ -53,6 +53,7 @@ _CHUNKER_FIELDS = {
     "fixed": ("chunk_size", "chunk_overlap"),
 }
 _INDEX_FIELDS = ("ef_construction", "max_neighbors", "ef_search")
+CHANNELS = ("vector", "bm25", "sparse")      # 可以参与融合的召回通道，和 retriever 注册名一致
 _UNFINISHED = (WAITING, PARSING, EMBEDDING)
 
 
@@ -298,25 +299,38 @@ class Library:
                 raise ValueError(f"{suffix} 的解析器 {chain} 不可用")
         return {"chunker": chunker, "encoder": encoder, "index": index,
                 "parsers": {k: list(v) for k, v in parsers.items()}, "ocr": bool(settings.get("ocr", False)),
-                **self._validate_retrieval(settings, base)}
+                **self._validate_retrieval(settings, base, encoder)}
 
-    def _validate_retrieval(self, settings: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
-        """精排模型、召回候选数、交给大模型的片段数。"""
+    def _validate_retrieval(self, settings: dict[str, Any], base: dict[str, Any],
+                            encoder: dict[str, Any]) -> dict[str, Any]:
+        """精排模型、召回候选数、交给大模型的片段数、各路召回的权重、RRF 常数、查询改写。"""
         ranker = settings.get("reranker") or base["reranker"]
         option = next((r for r in environment.rerankers() if r["type"] == ranker.get("type")), None)
         if option is None or not option["available"]:
             raise ValueError(f"精排模型不可用：{option['note'] if option else ranker.get('type')}")
         retrieval = {**base["retrieval"], **(settings.get("retrieval") or {})}
         try:
-            top_k, candidate_k = int(retrieval["top_k"]), int(retrieval["candidate_k"])
+            top_k, candidate_k, rrf_k = int(retrieval["top_k"]), int(retrieval["candidate_k"]), int(retrieval["rrf_k"])
+            weights = {name: float((retrieval.get("weights") or {}).get(name, 0.0)) for name in CHANNELS}
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"检索参数不合法：{retrieval}") from None
         if not 1 <= top_k <= 20:
             raise ValueError("交给大模型的片段数要在 1～20 之间")
         if not top_k <= candidate_k <= 200:
             raise ValueError("召回候选数要不少于交给大模型的片段数，且不超过 200")
+        if not 1 <= rrf_k <= 1000:
+            raise ValueError("RRF 常数 k 要在 1～1000 之间")
+        if any(w < 0 or w > 10 for w in weights.values()) or not any(weights.values()):
+            raise ValueError("各路召回的权重要在 0～10 之间，且至少有一路大于 0")
+        if weights["sparse"] and not _supports_sparse(encoder):
+            raise ValueError("稀疏召回需要 embedding 选“BGE-M3（稠密 + 稀疏）”：稀疏向量在建库时和稠密向量一起生成")
+        transform = str(retrieval.get("query_transform") or "none")
+        choice = next((t for t in environment.query_transforms() if t["type"] == transform), None)
+        if choice is None or not choice["available"]:
+            raise ValueError(f"查询改写不可用：{choice['note'] if choice else transform}")
         return {"reranker": {"type": option["type"], "model": str(ranker.get("model") or option["model"])},
-                "retrieval": {"candidate_k": candidate_k, "top_k": top_k}}
+                "retrieval": {"candidate_k": candidate_k, "top_k": top_k, "weights": weights, "rrf_k": rrf_k,
+                              "query_transform": transform}}
 
     def set_retrieval(self, kb_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         """
@@ -324,8 +338,9 @@ class Library:
         """
         with self._lock(kb_id):
             manifest = self._manifest(kb_id)
-            manifest["settings"] = {**_with_defaults(manifest["settings"]),
-                                    **self._validate_retrieval(settings, environment.default_settings())}
+            current = _with_defaults(manifest["settings"])
+            manifest["settings"] = {**current, **self._validate_retrieval(settings, environment.default_settings(),
+                                                                          current["encoder"])}
             self._write_manifest(manifest)
         return self._summary(manifest)
 
@@ -343,9 +358,15 @@ class Library:
         if settings.get("ocr"):
             parsing["ocr"] = {"type": "vlm_ocr"}
         settings = _with_defaults(settings)
+        retrieval = settings["retrieval"]
         cfg.update(chunker=dict(settings["chunker"]), encoder=_encoder_config(settings["encoder"]),
                    index=index, parsing=parsing, reranker=_reranker_config(settings["reranker"]),
-                   pipeline={**(cfg.get("pipeline") or {}), **settings["retrieval"]})
+                   retriever=_retriever_config(retrieval),
+                   pipeline={**(cfg.get("pipeline") or {}), "candidate_k": retrieval["candidate_k"],
+                             "top_k": retrieval["top_k"]})
+        if environment.has_llm():
+            # 查询改写、多轮对话问题补全要用大模型；地址和密钥由 LLM 客户端从环境变量读取
+            cfg["llm"] = load_config(_PROJECT_ROOT / "configs" / "models_env.yaml")["llm"]
         return cfg
 
     # ------------------------------------------------------------------ 建库任务
@@ -509,10 +530,27 @@ def _file_entry(path: Path) -> dict[str, Any]:
 
 def _with_defaults(settings: dict[str, Any]) -> dict[str, Any]:
     """
-    精排和召回参数是后来加的，之前建的知识库清单里没有这两项：按当时的实际行为补上
-    （词重叠精排、召回 20 个候选、交给大模型 5 个），老知识库的检索结果不会因为升级而改变。
+    精排和召回参数是后来分几次加的，之前建的知识库清单里缺其中几项：按当时的实际行为补上
+    （词重叠精排、召回 20 个候选、交给大模型 5 个、向量和 BM25 等权、RRF 常数 60、不改写），
+    老知识库的检索结果不会因为升级而改变。
     """
-    return {"reranker": {"type": "lexical", "model": ""}, "retrieval": {"candidate_k": 20, "top_k": 5}, **settings}
+    retrieval = {"candidate_k": 20, "top_k": 5, **environment.DEFAULT_FUSION, **(settings.get("retrieval") or {})}
+    return {"reranker": {"type": "lexical", "model": ""}, **settings, "retrieval": retrieval}
+
+
+def _supports_sparse(encoder: dict[str, Any]) -> bool:
+    """只有 FlagEmbedding 版的 BGE-M3 在向量化时同时生成稀疏向量。"""
+    return encoder.get("type") == "bge_m3"
+
+
+def _retriever_config(retrieval: dict[str, Any]) -> dict[str, Any]:
+    """各路召回（权重为 0 的不参与）→ RRF 融合 → 可选的查询改写套在最外层（每个改写后的问题都走一遍多路召回）。"""
+    channels = [name for name in CHANNELS if retrieval["weights"].get(name, 0) > 0]
+    hybrid = {"type": "hybrid", "rrf_k": retrieval["rrf_k"], "channels": [{"type": c} for c in channels],
+              "weights": [retrieval["weights"][c] for c in channels]}
+    if retrieval["query_transform"] == "none":
+        return hybrid
+    return {"type": "transformed", "transformer": {"type": retrieval["query_transform"]}, "inner": hybrid}
 
 
 def _reranker_config(reranker: dict[str, Any]) -> dict[str, Any]:
@@ -527,7 +565,7 @@ def _reranker_config(reranker: dict[str, Any]) -> dict[str, Any]:
 def _encoder_config(encoder: dict[str, Any]) -> dict[str, Any]:
     if encoder["type"] == "hashing":
         return {"type": "hashing", "dimension": 512}
-    if encoder["type"] == "sentence_transformers":
-        return {"type": "sentence_transformers", "model_name": encoder["model"]}
+    if encoder["type"] in ("sentence_transformers", "bge_m3"):
+        return {"type": encoder["type"], "model_name": encoder["model"]}
     # 地址和密钥由 encoder 自己从环境变量读取，不经过页面，也不写进清单
     return {"type": "openai_compat", "model": encoder["model"], "dimension": int(os.getenv("EMBEDDING_DIM") or 1536)}
