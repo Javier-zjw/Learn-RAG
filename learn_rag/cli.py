@@ -6,6 +6,7 @@ learn_rag.cli —— 命令行入口。
     verify  核对知识库是否完整 ——「查得清」
     ask     一次问答（含证据展示）——「跑起来」
     eval    在数据集上评测       ——「量出来」
+    evalset 从自己的文档生成评测集 ——「有题考」
     ls      查看有哪些可用实现   ——「换得动」
     serve   启动可视化建库页面   ——「点得到」
 
@@ -23,6 +24,7 @@ import argparse
 import json
 import logging
 import os
+from collections import Counter
 from pathlib import Path
 
 from .core.config import load_config
@@ -170,9 +172,28 @@ def _provenance(meta: dict, asset_dirs: list[str]) -> list[str]:
     return lines
 
 
+def _open_kb(args: argparse.Namespace):
+    """打开页面上建好的知识库（data/web/kbs/<id>），返回 (Library, 知识库信息)。"""
+    from .server.library import Library, NotFound
+
+    library = Library(args.data)
+    try:
+        return library, library.info(args.kb)
+    except NotFound:
+        known = "、".join(f"{kb['id']}（{kb['name']}）" for kb in library.list()) or "无"
+        raise SystemExit(f"{args.data} 下没有知识库 {args.kb}。已有的知识库：{known}") from None
+
+
 def cmd_eval(args: argparse.Namespace) -> None:
     cfg = load_config(*_config_paths(args))
-    pipe = _build_system(args, cfg)
+    if args.kb:
+        # 评测页面上建好的知识库：管线按该知识库的参数构建，不重新建索引
+        library, info = _open_kb(args)
+        pipe = library.pipeline(args.kb)
+        cfg = {**cfg, "kb": {"id": args.kb, "name": info["name"], "settings": info["settings"]}}
+        print(f"[知识库] {info['name']}（{args.kb}）：{info['files']} 个文档，{info['chunks']} 个子块")
+    else:
+        pipe = _build_system(args, cfg)
     dataset = _build_dataset(args)
 
     k = cfg.get("pipeline", {}).get("top_k", 5)
@@ -188,7 +209,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
         print(f"[复用索引] {persist} → " + "　".join(f"{k}={v}" for k, v in pipe.kb.stats().items()))
 
     evaluator = Evaluator(pipe, metrics, retrieval_only=args.retrieval_only, workers=args.workers)
-    report = evaluator.run(dataset, build_index=not args.reuse_index)
+    report = evaluator.run(dataset, build_index=not (args.reuse_index or args.kb))
     for extra_round in range(2, args.rounds + 1):
         print(f"\n[第 {extra_round} 轮] 记忆已积累，重跑同一数据集以观察经验复用的效果")
         report = evaluator.run(dataset, build_index=False)
@@ -198,6 +219,37 @@ def cmd_eval(args: argparse.Namespace) -> None:
         report.save(args.out)
         Path(args.out).with_suffix(".md").write_text(report.to_markdown(), encoding="utf-8")
         print(f"\n明细已保存：{args.out}")
+
+
+def cmd_evalset(args: argparse.Namespace) -> None:
+    """
+    用大模型从知识库的文档里生成评测集（问题、答案、证据原文），保存成 jsonl，供 eval --kb 使用。
+    大模型读 configs/models_env.yaml（LLM_BASE_URL / LLM_API_KEY / LLM_MODEL）。
+    """
+    from .eval.synth import QuestionSynthesizer, to_jsonl_row
+
+    cfg = load_config("configs/default.yaml", "configs/models_env.yaml", *(args.config or []))
+    llm_cfg = cfg.get("llm") or {}
+    if llm_cfg.get("type") == "echo" or not (llm_cfg.get("api_key") or llm_cfg.get("base_url")):
+        raise SystemExit("生成评测集需要大模型：在 .env 里配置 LLM_BASE_URL、LLM_API_KEY、LLM_MODEL"
+                         "（任何 OpenAI 兼容服务，如 DeepSeek、Qwen、本地 vLLM）")
+    library, info = _open_kb(args)
+    kb = library.pipeline(args.kb).kb
+    chunks = [c for doc_id in kb.documents() for c in kb.chunks_of(doc_id)]
+    synthesizer = QuestionSynthesizer(registry.build("llm", llm_cfg), per_passage=args.per, workers=args.workers)
+    print(f"[出题] 知识库 {info['name']}（{args.kb}）：{len(kb.documents())} 个文档，目标 {args.n} 道题……")
+    samples = synthesizer.generate(chunks, args.n, seed=args.seed)
+
+    out = Path(args.out or f"data/eval/{args.kb}.jsonl")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(to_jsonl_row(s), ensure_ascii=False) + "\n" for s in samples), encoding="utf-8")
+    kinds = "　".join(f"{k}={v}" for k, v in sorted(Counter(s.metadata["type"] for s in samples).items()))
+    print(f"[完成] {len(samples)} 道题 → {out}　题型：{kinds or '无'}")
+    print("  检查与丢弃：" + "，".join(f"{k} {v}" for k, v in synthesizer.stats.items()))
+    print("  建议人工抽查：删掉含糊、答案不唯一的题，jsonl 每行一道，可直接编辑")
+    print(f"  评测：learn-rag eval --kb {args.kb} --qa {out} --retrieval-only")
+    if not samples:
+        raise SystemExit(1)
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -340,7 +392,20 @@ def main() -> None:
     p_eval.add_argument("--reuse-index", action="store_true",
                         help="复用已建好的持久化索引，跳过向量化（配合 build 子命令使用）")
     p_eval.add_argument("--out", help="评测明细输出路径 .json")
+    p_eval.add_argument("--kb", help="评测页面上建好的知识库（知识库 id，见 data/web/kbs/），不重新建索引")
+    p_eval.add_argument("--data", default="data/web", help="页面服务的数据目录（配合 --kb）")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_evalset = sub.add_parser("evalset", help="用大模型从知识库的文档生成评测集（问题 + 答案 + 证据原文）")
+    p_evalset.add_argument("--kb", required=True, help="知识库 id（见 data/web/kbs/）")
+    p_evalset.add_argument("--data", default="data/web", help="页面服务的数据目录")
+    p_evalset.add_argument("-n", type=int, default=100, help="生成多少道题（默认 100）")
+    p_evalset.add_argument("--per", type=int, default=2, help="每段资料出几道题")
+    p_evalset.add_argument("--seed", type=int, default=0, help="抽样的随机种子，相同种子抽到相同的片段")
+    p_evalset.add_argument("--workers", type=int, default=4, help="并发调用大模型的数量")
+    p_evalset.add_argument("--out", help="输出 jsonl（默认 data/eval/<知识库 id>.jsonl）")
+    p_evalset.add_argument("--config", action="append", default=None, help="额外的配置文件（覆盖 llm 等）")
+    p_evalset.set_defaults(func=cmd_evalset)
 
     p_build = sub.add_parser("build", help="离线建库并持久化（只需跑一次）")
     p_build.add_argument("--config", action="append", default=None)

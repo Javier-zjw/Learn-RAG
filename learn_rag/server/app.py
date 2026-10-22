@@ -66,6 +66,7 @@ class Rebuild(BaseModel):
 def create_app(data_dir: str | Path = "data/web", mineru: MinerUService | None = None) -> FastAPI:
     """mineru 不为空时，服务启动时在后台启动 MinerU，服务退出时把它一并关闭。"""
     library = Library(data_dir, mineru=mineru)
+    library.recover()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

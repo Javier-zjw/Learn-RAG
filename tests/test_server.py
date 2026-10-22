@@ -140,8 +140,8 @@ class TestServer(unittest.TestCase):
 
         reopened = Library(self.tmp)
         self.assertEqual([d["doc_id"] for d in reopened.info(kb_id)["documents"]], ["手册/部署指南.md"])
-        self.assertEqual(reopened._pipeline(kb_id).kb.documents(), ["手册/部署指南.md"])
-        self.assertTrue(reopened._pipeline(kb_id).kb.verify()["ok"])
+        self.assertEqual(reopened.pipeline(kb_id).kb.documents(), ["手册/部署指南.md"])
+        self.assertTrue(reopened.pipeline(kb_id).kb.verify()["ok"])
 
     def test_overlap_is_marked_between_split_paragraph_chunks(self):
         kb_id, _ = self._create({"chunker": {"type": "structure", "chunk_size": 80, "parent_size": 400,
@@ -215,7 +215,7 @@ class TestServer(unittest.TestCase):
         from learn_rag.server.library import Library
 
         reopened = Library(self.tmp)
-        self.assertEqual(len(reopened._pipeline(kb_id).kb.documents()), 2)
+        self.assertEqual(len(reopened.pipeline(kb_id).kb.documents()), 2)
         self.assertEqual([k["id"] for k in self.client.get("/api/kbs").json()], [kb_id])
         self.assertEqual(self.client.delete(f"/api/kbs/{kb_id}").status_code, 200)
         self.assertEqual(self.client.get("/api/kbs").json(), [])

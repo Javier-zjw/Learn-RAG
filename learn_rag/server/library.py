@@ -77,9 +77,13 @@ class Library:
         self._pipes: dict[str, tuple[str, RagPipeline]] = {}   # kb_id -> (参数, 管线)
         self._locks: dict[str, threading.RLock] = {}
         self._guard = threading.Lock()
-        self._mark_interrupted()
 
     # ------------------------------------------------------------------ 知识库
+    def pipeline(self, kb_id: str) -> RagPipeline:
+        """知识库的完整管线（召回、精排、生成），评测和以后的提问页用它；和建库用的是同一个对象。"""
+        with self._lock(kb_id):
+            return self._pipeline(kb_id)
+
     def list(self) -> list[dict[str, Any]]:
         summaries = [self._summary(m) for m in self._manifests()]
         return sorted(summaries, key=lambda s: s["updated_at"], reverse=True)
@@ -446,8 +450,11 @@ class Library:
         tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, path)
 
-    def _mark_interrupted(self) -> None:
-        """服务重启时还没处理完的文件标成失败：任务只在内存里，重启后不会自动继续。"""
+    def recover(self) -> None:
+        """
+        页面服务启动时调用：上次没处理完的文件标成失败（任务只在内存里，重启后不会自动继续）。
+        不放在构造函数里：命令行评测也会打开 Library，那时页面服务可能正在建库，不能把进行中的文件改成失败。
+        """
         for manifest in self._manifests():
             stale = [e for e in manifest["files"].values() if e.get("status") in _UNFINISHED]
             for entry in stale:
