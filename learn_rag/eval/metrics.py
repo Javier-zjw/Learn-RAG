@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from ..core.interfaces import LLM, Metric
 from ..core.registry import registry
 from ..core.types import EvalSample, RagResult
-from ..core.text import normalize, tokenize
+from ..core.text import coverage, normalize, tokenize
 
 
 # ① 检索指标：需要 gold_doc_ids 标注
@@ -153,6 +153,48 @@ class NDCGAtK(_RetrievalMetric):
         return {f"ndcg@{self.k}": dcg / idcg if idcg else 0.0}
 
 
+# ①' 证据级检索指标：需要 evidence 标注（回答所需的原文片段）
+@registry.register("metric", "evidence")
+class EvidenceAtK(Metric):
+    """
+    证据级检索指标：前 k 个上下文里有没有找回回答所需的那段原文。
+
+    文档级指标（recall/mrr）只看命中了哪篇文档：一篇 50 页的手册，召回了第 3 页、证据在第 40 页，也算命中。
+    证据级指标看的是那段原文本身，才是"检索到的东西能不能用来回答"。
+
+    判断方式是文本比对（core.text.coverage）：前 r 个上下文合起来覆盖了证据原文的 80% 以上，就算在第 r 位找回。
+    不依赖分块 id —— 改 chunk_size、换切分器后同一份评测集照样能用，这正是比较切分参数时需要的。
+    证据跨两个子块时，合起来覆盖也算找回（父块展开后通常在同一个上下文里）。
+
+    输出：
+      evidence_hit@k     至少找回一段证据（0/1）
+      evidence_recall@k  找回的证据段数 / 证据总段数
+      evidence_mrr@k     第一段证据在第几位被找回的倒数（排得越前越好）
+    """
+
+    name = "evidence"
+    needs_evidence = True
+    threshold = 0.8
+
+    def __init__(self, k: int = 5) -> None:
+        self.k = k
+
+    def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
+        contexts = result.context_texts[: self.k]
+        evidence = [e for e in sample.evidence if e.strip()]
+        found_at: list[int] = []          # 每段证据在第几位被找回，0 表示没找回
+        for passage in evidence:
+            rank = next((r for r in range(1, len(contexts) + 1)
+                         if coverage(passage, "\n".join(contexts[:r])) >= self.threshold), 0)
+            found_at.append(rank)
+        found = [r for r in found_at if r]
+        return {
+            f"evidence_hit@{self.k}": 1.0 if found else 0.0,
+            f"evidence_recall@{self.k}": len(found) / len(evidence),
+            f"evidence_mrr@{self.k}": 1.0 / min(found) if found else 0.0,
+        }
+
+
 # ② 上下文质量指标：不需要证据标注，只需要标准答案
 @registry.register("metric", "context_recall")
 class ContextRecall(Metric):
@@ -195,6 +237,7 @@ class ExactMatch(Metric):
     """
 
     name = "exact_match"
+    needs_generation = True
     needs_gold_answer = True
 
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
@@ -211,6 +254,7 @@ class AnswerContains(Metric):
     """
 
     name = "answer_contains"
+    needs_generation = True
     needs_gold_answer = True
 
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
@@ -229,6 +273,7 @@ class TokenF1(Metric):
     """
 
     name = "token_f1"
+    needs_generation = True
     needs_gold_answer = True
 
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
@@ -252,6 +297,7 @@ class RougeL(Metric):
     """
 
     name = "rouge_l"
+    needs_generation = True
     needs_gold_answer = True
 
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
@@ -280,6 +326,7 @@ class LexicalFaithfulness(Metric):
     """
 
     name = "faithfulness"
+    needs_generation = True
 
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]:
         context = set(tokenize(" ".join(result.context_texts)))
@@ -326,6 +373,7 @@ class LLMJudge(Metric):
     """
 
     name = "llm_judge"
+    needs_generation = True
     needs_gold_answer = False
 
     PROMPT = (
@@ -398,6 +446,7 @@ def default_metrics(k: int = 5, llm: LLM | None = None) -> list[Metric]:
         MRRAtK(k),
         MAPAtK(k),
         NDCGAtK(k),
+        EvidenceAtK(k),
         ContextRecall(),
         ExactMatch(),
         AnswerContains(),

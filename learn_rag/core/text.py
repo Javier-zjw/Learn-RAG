@@ -113,3 +113,43 @@ def count_tokens(text: str) -> int:
         else:
             total += 1
     return math.ceil(total)
+
+
+# 只认真正的 HTML 标签（合并单元格的表格是 HTML）；"<服务器IP>" 这类尖括号里的正文要保留
+_HTML_TAG = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?/?>")
+_SEGMENT = 8
+
+
+def match_key(text: str) -> str:
+    """
+    用于"这段原文出现在那段文字里吗"的比对键：只留字母、数字和汉字，统一全角半角和大小写。
+
+    PDF 文字层的换行和连字符、Markdown 的表格竖线和井号、中英文标点都会让逐字比较失败，去掉之后两边才对得上。
+    原文视图定位分块、评测判断证据是否被召回，用的都是它。
+    """
+    text = unicodedata.normalize("NFKC", _HTML_TAG.sub(" ", text or "")).lower()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def coverage(passage: str, text: str) -> float:
+    """
+    passage 有多大比例出现在 text 里（0~1）。
+
+    passage 按 8 个字一段分别查找，算找到的比例；一段找不到时再分别找它的前后两半（各算半段），
+    个别字不同（OCR 错字、标点、数字格式）只损失半段，不会让一句短证据整体判为未出现。
+    两个参数都可以是原始文本，内部先转成 match_key。
+    """
+    needle, haystack = match_key(passage), match_key(text)
+    if not needle:
+        return 0.0
+    if needle in haystack:
+        return 1.0
+    segments = [needle[i:i + _SEGMENT] for i in range(0, len(needle), _SEGMENT)]
+    found = 0.0
+    for segment in segments:
+        if segment in haystack:
+            found += 1
+        elif len(segment) >= _SEGMENT:
+            half = len(segment) // 2
+            found += 0.5 * ((segment[:half] in haystack) + (segment[half:] in haystack))
+    return found / len(segments)

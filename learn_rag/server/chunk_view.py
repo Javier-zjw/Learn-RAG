@@ -13,6 +13,7 @@ from typing import Any
 
 from ..core.text import count_tokens
 from ..core.types import Chunk
+from ..ingest.structure import chunk_body
 
 _MIN_OVERLAP = 6   # 少于这么多字的"重叠"多半是巧合（比如都以句号结尾），不标
 
@@ -25,7 +26,7 @@ def document_view(chunks: list[Chunk], *, overlap: bool = False) -> dict[str, An
     items = []
     previous: tuple[str, str] | None = None     # (章节, 正文)
     for chunk in children:
-        body = _body(chunk)
+        body = chunk_body(chunk)
         section = str(chunk.metadata.get("section", ""))
         shared = _overlap(previous[1], body) if overlap and previous and previous[0] == section else 0
         items.append({**_describe(chunk, body), "parent_id": chunk.metadata.get("parent_id"), "overlap": shared})
@@ -35,7 +36,7 @@ def document_view(chunks: list[Chunk], *, overlap: bool = False) -> dict[str, An
     for chunk in children:
         if chunk.metadata.get("parent_id"):
             members.setdefault(chunk.metadata["parent_id"], []).append(chunk.chunk_id)
-    parent_items = [{**_describe(p, _body(p)), "children": members.get(p.chunk_id, [])} for p in parents]
+    parent_items = [{**_describe(p, chunk_body(p)), "children": members.get(p.chunk_id, [])} for p in parents]
 
     meta = chunks[0].metadata if chunks else {}
     tokens = [item["tokens"] for item in items]
@@ -71,16 +72,6 @@ def _describe(chunk: Chunk, body: str) -> dict[str, Any]:
         "assets": meta.get("assets", []),
         "metadata": meta,
     }
-
-
-def _body(chunk: Chunk) -> str:
-    """结构切分的块首有一行"[标题 > 章节]"，其他切分器没有；有 section 元数据才说明是结构切分。"""
-    text = chunk.text
-    if "section" in chunk.metadata and text.startswith("["):
-        first, _, rest = text.partition("\n")
-        if first.endswith("]"):
-            return rest
-    return text
 
 
 def _overlap(previous: str, current: str) -> int:

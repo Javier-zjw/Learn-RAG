@@ -31,7 +31,8 @@ from ..core.types import Document, EvalSample
 class JsonlQADataset(EvalDataset):
     """通用 jsonl 数据集。
 
-    qa.jsonl     : {"id", "question", "answers": [...], "gold_doc_ids": [...]}
+    qa.jsonl     : {"id", "question", "answers": [...], "gold_doc_ids": [...], "evidence": [...]}
+                   evidence（可选）是回答所需的原文片段，用于证据级指标；learn-rag evalset 生成的评测集自带
     corpus.jsonl : {"id", "title", "text"}   （可选；不给就用已建好的知识库）
 
     字段名全部可配，因此绝大多数开源 QA 数据集导出成 jsonl 后都能直接吃。
@@ -82,6 +83,8 @@ class JsonlQADataset(EvalDataset):
                 question=row[self.question_field],
                 answers=[str(a) for a in answers],
                 gold_doc_ids=[str(g) for g in row.get(self.gold_field, [])],
+                evidence=[str(e) for e in ([row["evidence"]] if isinstance(row.get("evidence"), str)
+                                           else row.get("evidence") or [])],
                 # 透传全部额外字段：expected_tools（路由标注）、gold_weights（偏好权重）
                 # 等 agentic 指标都从这里取值。**数据集不该为指标做特判**。
                 metadata={k: v for k, v in row.items() if k not in {self.question_field, self.answer_field}},

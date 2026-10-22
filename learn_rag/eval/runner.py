@@ -56,6 +56,13 @@ class EvalReport:
 
         for key in sorted(self.summary):
             lines.append(f"| {key} | {self.summary[key]:.4f} |")
+        missed = [c for c in self.cases if any(k.startswith("evidence_hit") and v == 0 for k, v in c.scores.items())]
+        if missed:
+            # 证据没被召回的题是调检索最直接的线索：看问题怎么问的、证据是哪段，再去查为什么没召回
+            lines += ["", f"## 证据未召回的问题（共 {len(missed)} 题，列出前 10 题）", ""]
+            for case in missed[:10]:
+                evidence = case.sample.evidence[0].replace("\n", " ")[:80] if case.sample.evidence else ""
+                lines.append(f"- {case.sample.question}　→　证据：{evidence}")
         if self.errors[:top_errors]:
             lines += ["", "## 失败样本（截取）", ""]
             lines += [f"- {e}" for e in self.errors[:top_errors]]
@@ -76,8 +83,10 @@ class EvalReport:
                     "question": c.sample.question,
                     "gold": c.sample.answers,
                     "gold_doc_ids": c.sample.gold_doc_ids,
+                    "evidence": c.sample.evidence,
                     "prediction": c.result.answer.text,
                     "retrieved_doc_ids": c.result.retrieved_doc_ids,
+                    "retrieved_chunks": [ctx.chunk.chunk_id for ctx in c.result.contexts],
                     "citations": c.result.answer.citations,
                     "scores": c.scores,
                 }
@@ -144,6 +153,11 @@ class Evaluator:
             if metric.needs_gold_docs and not sample.gold_doc_ids:
                 continue
             if metric.needs_gold_answer and not any(sample.answers):
+                continue
+            if metric.needs_evidence and not any(sample.evidence):
+                continue
+            # 只评检索时没有生成答案，答案类指标算出来全是 0，会被误读成"答得很差"
+            if metric.needs_generation and self.retrieval_only:
                 continue
             try:
                 scores.update(metric.compute(sample, result))

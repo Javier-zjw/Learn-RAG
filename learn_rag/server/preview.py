@@ -20,14 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import tempfile
 import threading
-import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from ..core.text import match_key
 from ..parsing.legacy import convert
 
 # 直接能用 PyMuPDF 打开的格式（图片会被当成一页）
@@ -43,8 +42,6 @@ _MIN_GAP = 6           # 少于这么多字的未覆盖文字不标（页码、�
 _TEXT_RATIO = 0.5      # 正文一半以上能在文字层对上，才用文字层的位置
 _PAGE_WIDTH = 1400     # 页面图片的目标宽度（像素）
 _NEAR = 400           # 拆半后只在上一处匹配之后这么多字以内找
-# 只认真正的 HTML 标签（合并单元格的表格是 HTML）；"<服务器IP>" 这类尖括号里的正文要保留
-_HTML_TAG = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?/?>")
 
 
 class PreviewUnavailable(Exception):
@@ -127,9 +124,8 @@ def _pymupdf():
 
 
 def _normalize(text: str) -> str:
-    """只留字母、数字和汉字，统一全角半角和大小写。"""
-    text = unicodedata.normalize("NFKC", _HTML_TAG.sub(" ", text)).lower()
-    return "".join(ch for ch in text if ch.isalnum())
+    """只留字母、数字和汉字，统一全角半角和大小写（规则在 core.text.match_key，评测判断证据是否被召回也用它）。"""
+    return match_key(text)
 
 
 def _read_text(doc: Any) -> tuple[list[dict[str, float]], str, list[tuple[int, int, float, float, float, float]]]:

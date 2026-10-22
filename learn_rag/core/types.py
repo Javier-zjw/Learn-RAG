@@ -165,12 +165,15 @@ class EvalSample:
     一条评测样本
     answers: 允许多个标准答案（HotpotQA / NQ 等常见做法），命中任一即可
     gold_doc_ids: 标准证据文档；没有标注的数据集留空，此时检索类指标自动跳过，只算生成类指标（见 eval/metrics.py）
+    evidence: 回答所需的原文片段（逐字摘录）。检索到的上下文包含它就算命中，比文档级更细，
+              又不依赖分块 id —— 改了切分参数，同一份评测集照样能用。没有标注时证据级指标自动跳过
     """
 
     sample_id: str
     question: str
     answers: list[str] = field(default_factory=list)
     gold_doc_ids: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

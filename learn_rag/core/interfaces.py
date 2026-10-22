@@ -216,12 +216,15 @@ class Metric(ABC):
 
     返回 dict 而不是单个 float，是因为很多指标天然成组产出
     （如 Precision/Recall/F1、多个 k 值），拆成多个类反而啰嗦。
-    needs_gold_docs=True 的指标在缺少证据标注时会被自动跳过。
+    needs_gold_docs / needs_gold_answer / needs_evidence 为 True 的指标，在缺少对应标注时会被自动跳过；
+    needs_generation 为 True 的指标评的是生成的答案，只评检索（retrieval_only）时跳过。
     """
 
     name: str = "metric"
     needs_gold_docs: bool = False
     needs_gold_answer: bool = False
+    needs_evidence: bool = False
+    needs_generation: bool = False
 
     @abstractmethod
     def compute(self, sample: EvalSample, result: RagResult) -> dict[str, float]: ...

@@ -182,6 +182,19 @@ def _common_prefix(paths: list[list[str]]) -> list[str]:
     return prefix
 
 
+def chunk_body(chunk: Chunk) -> str:
+    """
+    去掉块首的"[文档标题 > 章节路径]"，只留正文。查看页单独显示章节标题、评测出题和核对证据只看正文时用它。
+    有 section 元数据才说明是结构切分加的前缀；其他切分器的块原样返回。
+    """
+    text = chunk.text
+    if "section" in chunk.metadata and text.startswith("["):
+        first, _, rest = text.partition("\n")
+        if first.endswith("]"):
+            return rest
+    return text
+
+
 def _make_chunk(document: Document, path: list[str], body: str, elements: list[Element], position: int) -> Chunk:
     trail = path if path and path[0] == document.title else [document.title, *path]
     chunk = Chunk.of(document, "[" + " > ".join(trail) + "]\n" + body, position)
